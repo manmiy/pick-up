@@ -17,7 +17,7 @@ def check_password():
         st.info("システムを利用するにはパスワードを入力してください。")
         pwd = st.text_input("パスワード", type="password")
         if pwd:
-            if pwd == st.sercrets["app_password"]
+            if pwd == st.sercrets["app_password"] :
                 st.session_state["password_correct"] = True
                 st.rerun()
             else:
