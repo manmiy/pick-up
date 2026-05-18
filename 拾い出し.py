@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 import os
-import win32com.client
 from datetime import datetime
 
 st.set_page_config(page_title="自動発注システム", layout="wide")
@@ -41,6 +40,11 @@ uploaded_file = st.sidebar.file_uploader(
 
 # --- Excel出力関数の定義 ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
+    try:
+        import win32com.client
+    except ImportError:
+        raise Exception("この環境（Streamlit Cloud等）ではExcelがインストールされていないため、PDFへの変換はできません。Windows上のローカル環境でのみ動作します。")
+        
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
     
