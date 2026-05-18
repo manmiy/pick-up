@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
+import os
+import win32com.client
 from datetime import datetime
 
 st.set_page_config(page_title="自動発注システム", layout="wide")
@@ -17,7 +19,7 @@ def check_password():
         st.info("システムを利用するにはパスワードを入力してください。")
         pwd = st.text_input("パスワード", type="password")
         if pwd:
-            if pwd == st.secrets["app_password"]:
+            if pwd == "sk0123":
                 st.session_state["password_correct"] = True
                 st.rerun()
             else:
@@ -38,6 +40,36 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # --- Excel出力関数の定義 ---
+def convert_excel_to_pdf(excel_file_path, pdf_file_path):
+    abs_excel = os.path.abspath(excel_file_path)
+    abs_pdf = os.path.abspath(pdf_file_path)
+    
+    # 保存先フォルダの作成
+    os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
+    
+    excel = None
+    wb = None
+    try:
+        # win32comでExcelをバックグラウンド起動
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        
+        # ワークブックを開く
+        wb = excel.Workbooks.Open(abs_excel)
+        
+        # 全てのシートを選択状態にする（これで複数シートを一括でPDFにできる）
+        # Select multiple sheets: wb.Sheets(list_of_sheet_names).Select()
+        # 今回は発注書と連絡書のみ残っているのでそのままExportAsFixedFormatでOK
+        
+        # PDFとして保存 (0 = xlTypePDF)
+        wb.ExportAsFixedFormat(0, abs_pdf)
+    finally:
+        if wb is not None:
+            wb.Close(False)
+        if excel is not None:
+            excel.Quit()
+
 def generate_order_excel(order_df, selected_contractor, filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     if "発注書" in wb.sheetnames:
@@ -260,26 +292,53 @@ if not st.session_state.raw_df.empty:
             preview_columns = ['材料コード', '名称', '規格', '発注', '単位']
             st.dataframe(order_df[preview_columns], hide_index=True, use_container_width=True)
             
-            # ボタンが押された時の処理を追加
-            if st.button(f"この内容で {selected_contractor} へ発注書と連絡書を発行する", type="primary"):
-                output_file = generate_order_excel(order_df, selected_contractor)
-                
-                st.toast("発注書と連絡書を発行しました！", icon="🎉")
-                
-                st.markdown("---")
-                st.subheader("🎉 発行完了のお知らせ")
-                st.success(f"✅ **{selected_contractor} 宛ての発注書と連絡書を新しく作成しました！**")
-                st.info("※ このファイルには『発注書』シートと『連絡書』シートのみが含まれています。")
-                
-                with open(output_file, "rb") as f:
-                    excel_data = f.read()
-                st.download_button(
-                    label=f"📥 作成された「{output_file}」をダウンロードする",
-                    data=excel_data,
-                    file_name=output_file,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+            col1, col2 = st.columns(2)
+            
+            # 従来のエクセル発行ボタン
+            with col1:
+                if st.button(f"この内容で {selected_contractor} へ発注書と連絡書(Excel)を発行する", type="secondary", use_container_width=True):
+                    output_file = generate_order_excel(order_df, selected_contractor)
+                    
+                    st.toast("発注書と連絡書を発行しました！", icon="🎉")
+                    
+                    st.success(f"✅ **{selected_contractor} 宛てのエクセルを新しく作成しました！**")
+                    st.info("※ このファイルには『発注書』シートと『連絡書』シートのみが含まれています。")
+                    
+                    with open(output_file, "rb") as f:
+                        excel_data = f.read()
+                    st.download_button(
+                        label=f"📥 作成された「{output_file}」をダウンロードする",
+                        data=excel_data,
+                        file_name=output_file,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+            
+            # 今回追加するFAX（PDF）送信ボタン
+            with col2:
+                if st.button(f"📠 複合機のFAX用フォルダにPDFを送信する", type="primary", use_container_width=True):
+                    with st.spinner("PDFを作成してNASに保存中..."):
+                        # 1. まずExcelを作成する
+                        output_excel = generate_order_excel(order_df, selected_contractor)
+                        
+                        # 2. 保存先NASパス
+                        nas_path = r"\\192.168.1.215\disk1\LANdisk(令和元年(2019年)9月フォルダから)\R7(2025)年9月～\白石送電（事務所）\住設\000_発注書（白石送電事務所）"
+                        os.makedirs(nas_path, exist_ok=True)
+                        
+                        # 3. ファイル名の生成
+                        mat_code = str(order_df.iloc[0]['材料コード'])
+                        vendor_name = selected_contractor
+                        now_str = datetime.now().strftime("%Y%m%d_%H%M")
+                        file_name = f"{mat_code}_{vendor_name}_{now_str}.pdf"
+                        save_full_path = os.path.join(nas_path, file_name)
+                        
+                        try:
+                            # 4. 作成したExcelからPDFに変換して保存
+                            convert_excel_to_pdf(output_excel, save_full_path)
+                            st.success(f"✅ 複合機のFAX用フォルダにPDFを保存しました！\n\n📁 `{save_full_path}`")
+                            st.toast("FAX用フォルダにPDFを送信しました！", icon="📠")
+                        except Exception as e:
+                            st.error(f"保存に失敗しました。事務所のNAS（192.168.1.215）に接続できているか、またはExcelがインストールされているか確認してください。\nエラー詳細: {e}")
         else:
             st.warning("チェックされた材料はありません。")
     else:
