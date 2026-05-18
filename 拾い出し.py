@@ -314,31 +314,40 @@ if not st.session_state.raw_df.empty:
                         use_container_width=True
                     )
             
-            # 今回追加するFAX（PDF）送信ボタン
+            # PDFダウンロードボタン
             with col2:
-                if st.button(f"📠 複合機のFAX用フォルダにPDFを送信する", type="primary", use_container_width=True):
-                    with st.spinner("PDFを作成してNASに保存中..."):
+                if st.button(f"📄 発注書と連絡書(PDF)を作成する", type="primary", use_container_width=True):
+                    with st.spinner("PDFを作成中..."):
                         # 1. まずExcelを作成する
                         output_excel = generate_order_excel(order_df, selected_contractor)
                         
-                        # 2. 保存先NASパス
-                        nas_path = r"\\192.168.1.215\disk1\LANdisk(令和元年(2019年)9月フォルダから)\R7(2025)年9月～\白石送電（事務所）\住設\000_発注書（白石送電事務所）"
-                        os.makedirs(nas_path, exist_ok=True)
-                        
-                        # 3. ファイル名の生成
+                        # 2. ファイル名の生成
                         mat_code = str(order_df.iloc[0]['材料コード'])
                         vendor_name = selected_contractor
                         now_str = datetime.now().strftime("%Y%m%d_%H%M")
                         file_name = f"{mat_code}_{vendor_name}_{now_str}.pdf"
-                        save_full_path = os.path.join(nas_path, file_name)
+                        
+                        # カレントディレクトリに一時保存
+                        save_full_path = os.path.join(os.getcwd(), file_name)
                         
                         try:
-                            # 4. 作成したExcelからPDFに変換して保存
+                            # 3. 作成したExcelからPDFに変換して保存
                             convert_excel_to_pdf(output_excel, save_full_path)
-                            st.success(f"✅ 複合機のFAX用フォルダにPDFを保存しました！\n\n📁 `{save_full_path}`")
-                            st.toast("FAX用フォルダにPDFを送信しました！", icon="📠")
+                            st.success(f"✅ **PDFの作成が完了しました！**")
+                            st.toast("PDFを作成しました！", icon="📄")
+                            
+                            # ダウンロードボタンを表示
+                            with open(save_full_path, "rb") as f:
+                                pdf_data = f.read()
+                            st.download_button(
+                                label=f"📥 作成された「{file_name}」をダウンロードする",
+                                data=pdf_data,
+                                file_name=file_name,
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
                         except Exception as e:
-                            st.error(f"保存に失敗しました。事務所のNAS（192.168.1.215）に接続できているか、またはExcelがインストールされているか確認してください。\nエラー詳細: {e}")
+                            st.error(f"PDFの作成に失敗しました。Excelがインストールされているか確認してください。\nエラー詳細: {e}")
         else:
             st.warning("チェックされた材料はありません。")
     else:
