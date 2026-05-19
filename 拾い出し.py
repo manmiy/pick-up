@@ -35,7 +35,7 @@ if not check_password():
 st.sidebar.subheader("マスターファイルの更新")
 uploaded_file = st.sidebar.file_uploader(
     "エクセルファイルをアップロードしてください（自動的にマスターファイルとして上書きされます）", 
-    type=["xlsx"]
+    type=["xlsx", "xlsm"]
 )
 
 # --- Excel出力関数の定義 ---
@@ -74,8 +74,9 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
         if excel is not None:
             excel.Quit()
 
-def generate_order_excel(order_df, selected_contractor, filename="拾い出し表.xlsx"):
-    wb = openpyxl.load_workbook(filename)
+def generate_order_excel(order_df, selected_contractor, filename="拾い出し表.xlsm"):
+    # マクロを維持するため keep_vba=True を指定（xlsxを読み込んだ場合でもエラーにはなりません）
+    wb = openpyxl.load_workbook(filename, keep_vba=True)
     if "発注書" in wb.sheetnames:
         ws = wb["発注書"]
     else:
@@ -137,14 +138,15 @@ def generate_order_excel(order_df, selected_contractor, filename="拾い出し�
         view.activeTab = 0
         view.firstSheet = 0
             
-    output_filename = f"発注書_連絡書_{selected_contractor}.xlsx"
+    # マクロ有効ブック（xlsm）として出力
+    output_filename = f"発注書_連絡書_{selected_contractor}.xlsm"
     wb.save(output_filename)
     wb.close()
     return output_filename
 
 # --- 1. Excelデータの読み込みとクレンジング ---
 @st.cache_data
-def load_data(file_source="拾い出し表.xlsx"):
+def load_data(file_source="拾い出し表.xlsm"):
     df = pd.read_excel(file_source, sheet_name="拾い出し")
     
     new_columns = {}
@@ -198,12 +200,12 @@ if uploaded_file is not None:
     # 新しいファイルがアップロードされた時だけ処理を実行する（毎回の再ランでチェック状態がリセットされるのを防ぐため）
     if "last_uploaded_file_id" not in st.session_state or st.session_state.last_uploaded_file_id != uploaded_file.file_id:
         try:
-            # アップロードされたファイルの名前が何であっても、サーバー上では「拾い出し表.xlsx」として上書き保存する
-            with open("拾い出し表.xlsx", "wb") as f:
+            # マクロ有効ブック（xlsm）として上書き保存
+            with open("拾い出し表.xlsm", "wb") as f:
                 f.write(uploaded_file.getbuffer())
                 
             # 再読み込み
-            st.session_state.raw_df = load_data("拾い出し表.xlsx")
+            st.session_state.raw_df = load_data("拾い出し表.xlsm")
             st.session_state.display_df = st.session_state.raw_df.copy()
             
             # 処理済みのファイルIDを記録
@@ -216,10 +218,14 @@ if uploaded_file is not None:
 # 1. データの読み込み（初回のみ）
 if "raw_df" not in st.session_state:
     try:
-        st.session_state.raw_df = load_data("拾い出し表.xlsx")
+        st.session_state.raw_df = load_data("拾い出し表.xlsm")
     except Exception as e:
-        st.warning("現在、データが読み込まれていません。サイドバーから「拾い出し表.xlsx」をアップロードしてください。")
-        st.session_state.raw_df = pd.DataFrame()
+        # 万が一xlsmがない場合は既存のxlsxを試す
+        try:
+            st.session_state.raw_df = load_data("拾い出し表.xlsx")
+        except:
+            st.warning("現在、データが読み込まれていません。サイドバーから「拾い出し表.xlsm」をアップロードしてください。")
+            st.session_state.raw_df = pd.DataFrame()
 
 # メイン処理（データが正常に読み込まれている場合のみ実行）
 if not st.session_state.raw_df.empty:
@@ -296,62 +302,24 @@ if not st.session_state.raw_df.empty:
             preview_columns = ['材料コード', '名称', '規格', '発注', '単位']
             st.dataframe(order_df[preview_columns], hide_index=True, use_container_width=True)
             
-            col1, col2 = st.columns(2)
-            
-            # 従来のエクセル発行ボタン
-            with col1:
-                if st.button(f"この内容で {selected_contractor} へ発注書と連絡書(Excel)を発行する", type="secondary", use_container_width=True):
-                    output_file = generate_order_excel(order_df, selected_contractor)
-                    
-                    st.toast("発注書と連絡書を発行しました！", icon="🎉")
-                    
-                    st.success(f"✅ **{selected_contractor} 宛てのエクセルを新しく作成しました！**")
-                    st.info("※ このファイルには『発注書』シートと『連絡書』シートのみが含まれています。")
-                    
-                    with open(output_file, "rb") as f:
-                        excel_data = f.read()
-                    st.download_button(
-                        label=f"📥 作成された「{output_file}」をダウンロードする",
-                        data=excel_data,
-                        file_name=output_file,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-            
-            # PDFダウンロードボタン
-            with col2:
-                if st.button(f"📄 発注書と連絡書(PDF)を作成する", type="primary", use_container_width=True):
-                    with st.spinner("PDFを作成中..."):
-                        # 1. まずExcelを作成する
-                        output_excel = generate_order_excel(order_df, selected_contractor)
-                        
-                        # 2. ファイル名の生成
-                        mat_code = str(order_df.iloc[0]['材料コード'])
-                        vendor_name = selected_contractor
-                        now_str = datetime.now().strftime("%Y%m%d_%H%M")
-                        file_name = f"{mat_code}_{vendor_name}_{now_str}.pdf"
-                        
-                        # カレントディレクトリに一時保存
-                        save_full_path = os.path.join(os.getcwd(), file_name)
-                        
-                        try:
-                            # 3. 作成したExcelからPDFに変換して保存
-                            convert_excel_to_pdf(output_excel, save_full_path)
-                            st.success(f"✅ **PDFの作成が完了しました！**")
-                            st.toast("PDFを作成しました！", icon="📄")
-                            
-                            # ダウンロードボタンを表示
-                            with open(save_full_path, "rb") as f:
-                                pdf_data = f.read()
-                            st.download_button(
-                                label=f"📥 作成された「{file_name}」をダウンロードする",
-                                data=pdf_data,
-                                file_name=file_name,
-                                mime="application/pdf",
-                                use_container_width=True
-                            )
-                        except Exception as e:
-                            st.error(f"PDFの作成に失敗しました。Excelがインストールされているか確認してください。\nエラー詳細: {e}")
+            # エクセル発行ボタン
+            if st.button(f"この内容で {selected_contractor} へ発注書と連絡書(Excel)を発行する", type="primary", use_container_width=True):
+                output_file = generate_order_excel(order_df, selected_contractor)
+                
+                st.toast("発注書と連絡書を発行しました！", icon="🎉")
+                
+                st.success(f"✅ **{selected_contractor} 宛てのExcel（マクロ付き）を新しく作成しました！**")
+                st.info("※ このファイルをダウンロードして開き、中の「PDF保存ボタン」を押すことでFAX用に保存できます。")
+                
+                with open(output_file, "rb") as f:
+                    excel_data = f.read()
+                st.download_button(
+                    label=f"📥 作成された「{output_file}」をダウンロードする",
+                    data=excel_data,
+                    file_name=output_file,
+                    mime="application/vnd.ms-excel.sheet.macroEnabled.12",
+                    use_container_width=True
+                )
         else:
             st.warning("チェックされた材料はありません。")
     else:
