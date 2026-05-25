@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 import os
+import platform
+import subprocess
 from datetime import datetime
 
 st.set_page_config(page_title="自動発注システム", layout="wide")
@@ -35,48 +37,68 @@ if not check_password():
 st.sidebar.subheader("マスターファイルの更新")
 uploaded_file = st.sidebar.file_uploader(
     "エクセルファイルをアップロードしてください（自動的にマスターファイルとして上書きされます）", 
-    type=["xlsx", "xlsm"]
+    type=["xlsx"]
 )
 
 # --- Excel出力関数の定義 ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
-    try:
-        import win32com.client
-    except ImportError:
-        raise Exception("この環境（Streamlit Cloud等）ではExcelがインストールされていないため、PDFへの変換はできません。Windows上のローカル環境でのみ動作します。")
-        
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
     
     # 保存先フォルダの作成
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
     
-    excel = None
-    wb = None
-    try:
-        # win32comでExcelをバックグラウンド起動
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        
-        # ワークブックを開く
-        wb = excel.Workbooks.Open(abs_excel)
-        
-        # 全てのシートを選択状態にする（これで複数シートを一括でPDFにできる）
-        # Select multiple sheets: wb.Sheets(list_of_sheet_names).Select()
-        # 今回は発注書と連絡書のみ残っているのでそのままExportAsFixedFormatでOK
-        
-        # PDFとして保存 (0 = xlTypePDF)
-        wb.ExportAsFixedFormat(0, abs_pdf)
-    finally:
-        if wb is not None:
-            wb.Close(False)
-        if excel is not None:
-            excel.Quit()
+    # OSがWindowsの場合（ローカル実行）
+    if platform.system() == "Windows":
+        try:
+            import win32com.client
+        except ImportError:
+            raise Exception("Windows環境ですが win32com がインストールされていません。")
+            
+        excel = None
+        wb = None
+        try:
+            # win32comでExcelをバックグラウンド起動
+            excel = win32com.client.DispatchEx("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            
+            # ワークブックを開く
+            wb = excel.Workbooks.Open(abs_excel)
+            
+            # PDFとして保存 (0 = xlTypePDF)
+            wb.ExportAsFixedFormat(0, abs_pdf)
+        finally:
+            if wb is not None:
+                wb.Close(False)
+            if excel is not None:
+                excel.Quit()
+                
+    # OSがLinuxなどの場合（Streamlit Cloud実行）
+    else:
+        try:
+            # LibreOfficeを使ってPDFに変換
+            subprocess.run([
+                "libreoffice", "--headless", "--convert-to", "pdf", 
+                abs_excel, "--outdir", os.path.dirname(abs_pdf)
+            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # LibreOfficeは元のファイル名.pdfで出力するため、指定されたファイル名に変更する
+            base_name = os.path.splitext(os.path.basename(abs_excel))[0]
+            lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
+            
+            if lo_pdf_path != abs_pdf:
+                if os.path.exists(abs_pdf):
+                    os.remove(abs_pdf)
+                os.rename(lo_pdf_path, abs_pdf)
+                
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
+        except Exception as e:
+            raise Exception(f"PDF変換エラー: {e}")
 
-def generate_order_excel(order_df, selected_contractor, filename="拾い出し表.xlsm"):
-    # マクロを維持するため keep_vba=True を指定（xlsxを読み込んだ場合でもエラーにはなりません）
-    wb = openpyxl.load_workbook(filename, keep_vba=True)
+def generate_order_excel(order_df, selected_contractor, filename="拾い出し表.xlsx"):
+    wb = openpyxl.load_workbook(filename)
     if "発注書" in wb.sheetnames:
         ws = wb["発注書"]
     else:
@@ -138,15 +160,14 @@ def generate_order_excel(order_df, selected_contractor, filename="拾い出し�
         view.activeTab = 0
         view.firstSheet = 0
             
-    # マクロ有効ブック（xlsm）として出力
-    output_filename = f"発注書_連絡書_{selected_contractor}.xlsm"
+    output_filename = f"発注書_連絡書_{selected_contractor}.xlsx"
     wb.save(output_filename)
     wb.close()
     return output_filename
 
 # --- 1. Excelデータの読み込みとクレンジング ---
 @st.cache_data
-def load_data(file_source="拾い出し表.xlsm"):
+def load_data(file_source="拾い出し表.xlsx"):
     df = pd.read_excel(file_source, sheet_name="拾い出し")
     
     new_columns = {}
@@ -197,20 +218,14 @@ def load_data(file_source="拾い出し表.xlsm"):
 # アップロード時の処理
 # =========================================================
 if uploaded_file is not None:
-    # 新しいファイルがアップロードされた時だけ処理を実行する（毎回の再ランでチェック状態がリセットされるのを防ぐため）
     if "last_uploaded_file_id" not in st.session_state or st.session_state.last_uploaded_file_id != uploaded_file.file_id:
         try:
-            # マクロ有効ブック（xlsm）として上書き保存
-            with open("拾い出し表.xlsm", "wb") as f:
+            with open("拾い出し表.xlsx", "wb") as f:
                 f.write(uploaded_file.getbuffer())
                 
-            # 再読み込み
-            st.session_state.raw_df = load_data("拾い出し表.xlsm")
+            st.session_state.raw_df = load_data("拾い出し表.xlsx")
             st.session_state.display_df = st.session_state.raw_df.copy()
-            
-            # 処理済みのファイルIDを記録
             st.session_state.last_uploaded_file_id = uploaded_file.file_id
-            
             st.sidebar.success(f"✅ 「{uploaded_file.name}」をマスターファイルとして更新しました！")
         except Exception as e:
             st.sidebar.error(f"ファイルの読み込みに失敗しました: {e}")
@@ -218,39 +233,30 @@ if uploaded_file is not None:
 # 1. データの読み込み（初回のみ）
 if "raw_df" not in st.session_state:
     try:
-        st.session_state.raw_df = load_data("拾い出し表.xlsm")
+        st.session_state.raw_df = load_data("拾い出し表.xlsx")
     except Exception as e:
-        # 万が一xlsmがない場合は既存のxlsxを試す
-        try:
-            st.session_state.raw_df = load_data("拾い出し表.xlsx")
-        except:
-            st.warning("現在、データが読み込まれていません。サイドバーから「拾い出し表.xlsm」をアップロードしてください。")
-            st.session_state.raw_df = pd.DataFrame()
+        st.warning("現在、データが読み込まれていません。サイドバーから「拾い出し表.xlsx」をアップロードしてください。")
+        st.session_state.raw_df = pd.DataFrame()
 
 # メイン処理（データが正常に読み込まれている場合のみ実行）
 if not st.session_state.raw_df.empty:
 
-    # フィルタリングされた表示用データの初期化
     if "display_df" not in st.session_state:
         st.session_state.display_df = st.session_state.raw_df.copy()
 
-    # データエディタでチェックが押された直後に、原本（raw_df）を更新するコールバック関数
     def handle_editor_change(editor_key):
         editor_state = st.session_state.get(editor_key, {})
         edited_rows = editor_state.get("edited_rows", {})
         for pos, edits in edited_rows.items():
             if "発注対象" in edits:
-                # 表示用データフレームの行番号から、元の本当の行番号を特定
                 real_idx = st.session_state.display_df.index[int(pos)]
                 st.session_state.raw_df.at[real_idx, "発注対象"] = edits["発注対象"]
 
     # --- 2. 拾い出し表の表示と操作（チェックボックス） ---
     st.subheader("1. 発注する材料にチェックを入れてください")
 
-    # 外出しのフィルター検索ボックス
     search_query = st.text_input("🔍 絞り込み検索（業者名や材料名などを入力すると、それ以外は非表示になります）", "")
 
-    # 検索ワードに基づいて表示用データフレーム（display_df）を更新します
     if search_query:
         mask = (
             st.session_state.raw_df['発注先'].astype(str).str.contains(search_query, case=False, na=False) |
@@ -263,11 +269,8 @@ if not st.session_state.raw_df.empty:
         st.session_state.display_df = st.session_state.raw_df.copy()
 
     display_columns = ['発注対象', '材料コード', '名称', '規格', '発注', '単位', '発注先']
-
-    # 検索条件ごとに一意のキーを発行します
     current_editor_key = f"material_editor_{search_query}"
 
-    # 3. データエディタの表示
     st.data_editor(
         st.session_state.display_df,
         column_order=display_columns,
@@ -287,40 +290,79 @@ if not st.session_state.raw_df.empty:
     # --- 4. 発注書の自動生成ビュー ---
     st.subheader("3. 発注書プレビュー")
     if selected_contractor != "--選択してください--":
-        # チェックが入っている材料データをすべて抽出します（原本 raw_df から抽出）
         order_df = st.session_state.raw_df[st.session_state.raw_df['発注対象'] == True].copy()
-        
-        # 抽出したすべての材料の「発注先」を、選択した業者名に上書きします
         order_df['発注先'] = selected_contractor
         
         if not order_df.empty:
-            # 材料コードの昇順で並び替え
             order_df = order_df.sort_values(by=['材料コード'], ascending=True)
-            
             st.success(f"{selected_contractor} 宛ての発注データが指定の順序で抽出されました。")
-            # プレビュー表示（印刷に不要な列を隠す）
             preview_columns = ['材料コード', '名称', '規格', '発注', '単位']
             st.dataframe(order_df[preview_columns], hide_index=True, use_container_width=True)
             
-            # エクセル発行ボタン
-            if st.button(f"この内容で {selected_contractor} へ発注書と連絡書(Excel)を発行する", type="primary", use_container_width=True):
-                output_file = generate_order_excel(order_df, selected_contractor)
+            # 2カラム構成でExcel発行とPDF変換のUIを配置
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button(f"① Excelを発行する", type="primary", use_container_width=True):
+                    output_file = generate_order_excel(order_df, selected_contractor)
+                    st.session_state["generated_excel"] = output_file
+                    st.toast("Excelを発行しました！", icon="🎉")
+            
+            # Excelが生成されている場合のみ、ダウンロードとPDF変換のUIを活性化
+            if "generated_excel" in st.session_state and st.session_state["generated_excel"]:
+                excel_file_path = st.session_state["generated_excel"]
                 
-                st.toast("発注書と連絡書を発行しました！", icon="🎉")
+                # col1側でExcelダウンロードを提供
+                with col1:
+                    with open(excel_file_path, "rb") as f:
+                        excel_data = f.read()
+                    st.download_button(
+                        label=f"📥 「{excel_file_path}」をダウンロード",
+                        data=excel_data,
+                        file_name=excel_file_path,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
                 
-                st.success(f"✅ **{selected_contractor} 宛てのExcel（マクロ付き）を新しく作成しました！**")
-                st.info("※ このファイルをダウンロードして開き、中の「PDF保存ボタン」を押すことでFAX用に保存できます。")
-                
-                with open(output_file, "rb") as f:
-                    excel_data = f.read()
-                st.download_button(
-                    label=f"📥 作成された「{output_file}」をダウンロードする",
-                    data=excel_data,
-                    file_name=output_file,
-                    mime="application/vnd.ms-excel.sheet.macroEnabled.12",
-                    use_container_width=True
-                )
+                with col2:
+                    st.markdown("### PDFへ変換")
+                    # PDFに名前をつけて保存できるようなUI
+                    mat_code = str(order_df.iloc[0]['材料コード'])
+                    vendor_name = selected_contractor
+                    now_str = datetime.now().strftime("%Y%m%d_%H%M")
+                    default_pdf_name = f"{mat_code}_{vendor_name}_{now_str}.pdf"
+                    
+                    pdf_filename_input = st.text_input("保存するPDFのファイル名", value=default_pdf_name)
+                    pdf_file_path = os.path.join(os.getcwd(), pdf_filename_input)
+                    
+                    # PDF変換ボタン
+                    if st.button("② この名前でPDFを作成する", type="secondary", use_container_width=True):
+                        with st.spinner("ExcelからPDFへ変換中... (※数秒かかります)"):
+                            try:
+                                convert_excel_to_pdf(excel_file_path, pdf_file_path)
+                                st.session_state["generated_pdf"] = pdf_file_path
+                                st.toast("PDF変換が完了しました！", icon="📄")
+                            except Exception as e:
+                                st.error(f"PDF変換エラー: {e}")
+                    
+                    # PDFが生成されている場合のみ、PDFダウンロードボタンを表示
+                    if "generated_pdf" in st.session_state and st.session_state["generated_pdf"] == pdf_file_path:
+                        if os.path.exists(pdf_file_path):
+                            with open(pdf_file_path, "rb") as f:
+                                pdf_data = f.read()
+                            st.download_button(
+                                label=f"📥 「{pdf_filename_input}」をダウンロード",
+                                data=pdf_data,
+                                file_name=pdf_filename_input,
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
         else:
             st.warning("チェックされた材料はありません。")
+            # 選択が変わったらクリア
+            st.session_state["generated_excel"] = None
+            st.session_state["generated_pdf"] = None
     else:
         st.info("上のリストから業者を選択してください。")
+        st.session_state["generated_excel"] = None
+        st.session_state["generated_pdf"] = None
