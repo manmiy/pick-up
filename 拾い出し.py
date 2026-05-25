@@ -40,16 +40,12 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- 🎯 改善されたPDF変換ロジック ---
+# --- 改善されたPDF変換ロジック ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
     
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
-    
-    # 【超安全設計】
-    # 先ほど作成に成功したExcelファイルをそのまま利用します。
-    # openpyxlでの編集・削除・保存処理を一切行わないため、NoneTypeエラーは100%発生しません。
     
     # OSがWindowsの場合（ローカル実行環境）
     if platform.system() == "Windows":
@@ -64,7 +60,6 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
             excel.Visible = False
             excel.DisplayAlerts = False
             wb = excel.Workbooks.Open(abs_excel)
-            # 連絡書シートを印刷対象にするため、シート名を確認してアクティブにする
             for sheet in wb.Sheets:
                 if "連絡書" in sheet.Name:
                     sheet.Select()
@@ -77,7 +72,6 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     # OSがLinuxなどの場合（Streamlit Cloud実行環境）
     else:
         try:
-            # 既に完成しているExcelをそのままLibreOfficeに投入
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
                 abs_excel, "--outdir", os.path.dirname(abs_pdf)
@@ -148,7 +142,6 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
         safe_set(idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(idx, 16, clean_val(getattr(row, "納品備考", None)))
         
-    # 連絡書シートの自動検出と書き込み
     target_sheet_name = None
     for sheet_name in wb.sheetnames:
         if "連絡書" in sheet_name.strip():
@@ -161,7 +154,6 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
-        # 画面からの入力（satouなど）を2行目C列にピンポイント上書き
         if staff_name.strip():
             ws_renraku.cell(row=2, column=3).value = staff_name.strip()
             
@@ -171,9 +163,9 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
             if i >= num_items:
                 ws_renraku.cell(row=row_idx, column=1).value = None
         
-        # 印刷範囲を厳格に固定して2枚目の白紙を遮断
+        # 🎯【openpyxlの正しい仕様に修正しました】
         ws_renraku.print_area = 'A1:H20'
-        ws_renraku.page_setup.fitToPage = True
+        ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
         ws_renraku.page_setup.fitToHeight = 1
                 
