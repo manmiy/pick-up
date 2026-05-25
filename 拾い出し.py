@@ -45,15 +45,32 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
     
-    # 保存先フォルダの作成
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
     
-    # PDF出力専用の一時ファイルを作成（「連絡書」のみを表示状態にし、他は非表示にする）
     temp_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
     wb_temp = openpyxl.load_workbook(abs_excel)
+    
+    # 🛠【変更】2枚目の白紙化を防ぐため、「連絡書」以外の非表示と、不要領域の「完全削除」を行う
     for sheet in list(wb_temp.sheetnames):
         if sheet != "連絡書":
             wb_temp[sheet].sheet_state = 'hidden'
+            
+    if "連絡書" in wb_temp.sheetnames:
+        ws_renraku = wb_temp["連絡書"]
+        
+        # A1:H20の範囲外にあるハミ出しデータを物理的に削除（最大200行/50列まで掃除）
+        # これにより2枚目に印刷がはみ出る原因（ゴミデータや罫線）を根本から消去します
+        if ws_renraku.max_row > 20:
+            ws_renraku.delete_rows(21, ws_renraku.max_row - 20)
+        if ws_renraku.max_column > 8:
+            ws_renraku.delete_cols(9, ws_renraku.max_column - 8)
+            
+        # 印刷設定の強制適用
+        ws_renraku.print_area = 'A1:H20'
+        ws_renraku.page_setup.fitToPage = True
+        ws_renraku.page_setup.fitToWidth = 1
+        ws_renraku.page_setup.fitToHeight = 1
+        
     wb_temp.save(temp_excel)
     wb_temp.close()
     
@@ -111,7 +128,6 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 except:
                     pass
 
-# 🛠【変更】引数に `staff_name`（苗字）を追加
 def generate_order_excel(order_df, selected_contractor, staff_name="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     if "発注書" in wb.sheetnames:
@@ -161,19 +177,22 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
         else:
             safe_set(idx, 14, "")
             
-        # 🛠【変更】納品場所の後に苗字（〇〇様）を結合するロジック
-        base_location = clean_val(getattr(row, "納品場所", None))
-        if staff_name.strip():
-            # 苗字が入力されている場合は「納品場所 〇〇様」とする
-            full_location = f"{base_location} {staff_name.strip()}様"
-        else:
-            full_location = base_location
-            
-        safe_set(idx, 15, full_location)
+        # 🛠【変更】元の「納品場所」は加工せずそのまま戻します
+        safe_set(idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(idx, 16, clean_val(getattr(row, "納品備考", None)))
         
+    # 🛠【変更】連絡書シートの上部（大槻 様 の位置）に苗字を書き込む
     if "連絡書" in wb.sheetnames:
         ws_renraku = wb["連絡書"]
+        
+        # 💡【重要：要確認】
+        # 画像を見ると上部の「渡辺製作所 大槻 様」の部分を上書きしたい。
+        # ここでは仮に「D2セル」または「E2セル」付近と想定して上書き処理を行います。
+        # もしセル位置がズレている場合は、以下の `row=2, column=5` (E2) を実際のExcelに合わせて変更してください。
+        if staff_name.strip():
+            # 入力がある場合、指定セルを「〇〇 様」に書き換える
+            ws_renraku.cell(row=2, column=5).value = f"{staff_name.strip()} 様"
+            
         num_items = len(order_df)
         for i in range(14):
             row_idx = 5 + i
@@ -316,19 +335,18 @@ if not st.session_state.raw_df.empty:
     # --- 3. 業者の選択プルダウン ---
     st.subheader("2. 発注先および宛先情報を指定してください")
     
-    # 🛠【変更】レイアウトを2カラムにして、業者選択と苗字入力を横並びに配置
     meta_col1, meta_col2 = st.columns(2)
     with meta_col1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
         selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
     
     with meta_col2:
-        # 🛠【追加】フリーテキストで苗字を打てるUI
+        # 🛠【変更】文言を「宛先の担当者（大槻の位置に反映）」に明確化
         staff_name = st.text_input(
-            "納品場所の担当者（苗字）", 
+            "宛先担当者名（苗字のみで可）", 
             value="", 
-            placeholder="例: 山田 (空欄なら『様』は付きません)",
-            help="入力すると、Excelの納品場所に『[元の場所] 〇〇様』として出力されます。"
+            placeholder="例: satou (大槻の部分が上書きされます)",
+            help="入力すると、連絡書上部の担当者セル（大槻様の部分）に反映されます。"
         )
 
     # --- 4. 発注書の自動生成ビュー ---
@@ -343,12 +361,10 @@ if not st.session_state.raw_df.empty:
             preview_columns = ['材料コード', '名称', '規格', '発注', '単位']
             st.dataframe(order_df[preview_columns], hide_index=True, use_container_width=True)
             
-            # 2カラム構成でExcel発行とPDF変換のUIを配置
             col1, col2 = st.columns(2)
             
             with col1:
                 if st.button(f"① Excelを発行する", type="primary", use_container_width=True):
-                    # 🛠【変更】関数に `staff_name` を渡す
                     output_file = generate_order_excel(order_df, selected_contractor, staff_name=staff_name)
                     st.session_state["generated_excel"] = output_file
                     st.toast("Excelを発行しました！", icon="🎉")
