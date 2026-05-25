@@ -32,7 +32,7 @@ if not check_password():
     st.stop()
 
 # =========================================================
-# 【新機能】ファイルアップローダー（GitHubを開かずに更新）
+# マスターファイルの更新
 # =========================================================
 st.sidebar.subheader("マスターファイルの更新")
 uploaded_file = st.sidebar.file_uploader(
@@ -40,7 +40,7 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- Excel出力関数の定義 ---
+# --- PDF変換関数の定義 ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
@@ -50,14 +50,27 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     temp_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
     wb_temp = openpyxl.load_workbook(abs_excel)
     
-    # 連絡書だけを残して、他のシートを「完全に削除」する（これでNoneTypeエラーを防ぎます）
+    # 【シート自動検出ロジック】
+    # 「連絡書」という文字が含まれるシートを自動で探します（指定不要にするため）
+    target_sheet_name = None
+    for sheet_name in wb_temp.sheetnames:
+        if "連絡書" in sheet_name.strip():
+            target_sheet_name = sheet_name
+            break
+            
+    # もし見つからなければ、1番目のシートを対象にする（NoneTypeエラーを絶対に防ぐ安全策）
+    if target_sheet_name is None and len(wb_temp.sheetnames) > 0:
+        target_sheet_name = wb_temp.sheetnames[0]
+
+    # 対象の連絡書シートだけを残して他をすべて削除（PDF化の不具合を防ぐ）
     for sheet in list(wb_temp.sheetnames):
-        if sheet != "連絡書":
+        if sheet != target_sheet_name:
             wb_temp.remove(wb_temp[sheet])
             
-    if "連絡書" in wb_temp.sheetnames:
-        ws_renraku = wb_temp["連絡書"]
-        # 印刷範囲をA1からH20（1ページに収まる範囲）に厳格固定
+    if target_sheet_name in wb_temp.sheetnames:
+        ws_renraku = wb_temp[target_sheet_name]
+        
+        # 2枚目の白紙を絶対に出さないための印刷設定（1ページに強制収める）
         ws_renraku.print_area = 'A1:H20'
         ws_renraku.page_setup.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
@@ -93,10 +106,9 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 except:
                     pass
                 
-    # OSがLinuxなどの場合（Streamlit Cloud実行）
+    # OSがLinuxなどの場合（Streamlit Cloud実行環境）
     else:
         try:
-            # --landscape などを付けず、1ページに収めるコマンドを実行
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
                 temp_excel, "--outdir", os.path.dirname(abs_pdf)
@@ -120,9 +132,8 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                     os.remove(temp_excel)
                 except:
                     pass
-                
-  
 
+# --- Excel生成およびデータ書き込み関数の定義 ---
 def generate_order_excel(order_df, selected_contractor, staff_name="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     if "発注書" in wb.sheetnames:
@@ -175,16 +186,23 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
         safe_set(idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(idx, 16, clean_val(getattr(row, "納品備考", None)))
         
-    # 連絡書シートの制御
-    if "連絡書" in wb.sheetnames:
-        ws_renraku = wb["連絡書"]
+    # 自動で連絡書シートを検出
+    target_sheet_name = None
+    for sheet_name in wb.sheetnames:
+        if "連絡書" in sheet_name.strip():
+            target_sheet_name = sheet_name
+            break
+            
+    if target_sheet_name is None and len(wb.sheetnames) > 0:
+        target_sheet_name = wb.sheetnames[0]
+            
+    if target_sheet_name in wb.sheetnames:
+        ws_renraku = wb[target_sheet_name]
         
-        # 📍【ここがセル位置の指定場所です！】
-        # 1枚目の画像で「渡辺製作所 大槻 様」となっていた位置（セルの行と列）を指定します。
-        # 例：2行目のE列（5番目の列）を書き換える場合 → row=2, column=5
-        # もし実際のExcelで大槻様が「C2」にあるなら row=2, column=3 に変更してください。
+        # 🎯【ピンポイント位置修正】
+        # 解析データに基づき、2行目のC列（3番目の列）にある「大槻」を書き換えます。
         if staff_name.strip():
-            ws_renraku.cell(row=2, column=5).value = f"{staff_name.strip()} 様"
+            ws_renraku.cell(row=2, column=3).value = staff_name.strip()
             
         num_items = len(order_df)
         for i in range(14):
@@ -194,7 +212,7 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
         
         ws_renraku.print_area = 'A1:H20'
                 
-    sheets_to_keep = ["発注書", "連絡書"]
+    sheets_to_keep = ["発注書", target_sheet_name] if target_sheet_name else ["発注書"]
     for sheet in list(wb.sheetnames):
         if sheet not in sheets_to_keep:
             wb.remove(wb[sheet])
@@ -209,7 +227,8 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
     wb.save(output_filename)
     wb.close()
     return output_filename
-# --- 1. Excelデータの読み込みとクレンジング ---
+
+# --- Excelデータの読み込みとクレンジング ---
 @st.cache_data
 def load_data(file_source="拾い出し表.xlsx"):
     df = pd.read_excel(file_source, sheet_name="拾い出し")
@@ -270,7 +289,7 @@ if uploaded_file is not None:
             st.session_state.raw_df = load_data("拾い出し表.xlsx")
             st.session_state.display_df = st.session_state.raw_df.copy()
             st.session_state.last_uploaded_file_id = uploaded_file.file_id
-            st.sidebar.success(f"✅ 「{uploaded_file.name}」をマスターファイルとして更新しました！")
+            st.sidebar.success(f"✅ マスターファイルを更新しました！")
         except Exception as e:
             st.sidebar.error(f"ファイルの読み込みに失敗しました: {e}")
 
@@ -278,7 +297,7 @@ if "raw_df" not in st.session_state:
     try:
         st.session_state.raw_df = load_data("拾い出し表.xlsx")
     except Exception as e:
-        st.warning("現在、データが読み込まれていません。サイドバーから「拾い出し表.xlsx」をアップロードしてください。")
+        st.warning("現在、データが読み込まれていません。サイドバーからファイルをアップロードしてください。")
         st.session_state.raw_df = pd.DataFrame()
 
 if not st.session_state.raw_df.empty:
@@ -294,10 +313,9 @@ if not st.session_state.raw_df.empty:
                 real_idx = st.session_state.display_df.index[int(pos)]
                 st.session_state.raw_df.at[real_idx, "発注対象"] = edits["発注対象"]
 
-    # --- 2. 拾い出し表の表示と操作（チェックボックス） ---
+    # --- 1. 拾い出し表の表示と操作 ---
     st.subheader("1. 発注する材料にチェックを入れてください")
-
-    search_query = st.text_input("🔍 絞り込み検索（業者名や材料名などを入力すると、それ以外は非表示になります）", "")
+    search_query = st.text_input("🔍 絞り込み検索", "")
 
     if search_query:
         mask = (
@@ -324,7 +342,7 @@ if not st.session_state.raw_df.empty:
         kwargs={"editor_key": current_editor_key}
     )
 
-    # --- 3. 業者の選択プルダウン ---
+    # --- 2. 業者の選択プルダウン ---
     st.subheader("2. 発注先および宛先情報を指定してください")
     
     meta_col1, meta_col2 = st.columns(2)
@@ -333,15 +351,13 @@ if not st.session_state.raw_df.empty:
         selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
     
     with meta_col2:
-        # 🛠【変更】文言を「宛先の担当者（大槻の位置に反映）」に明確化
         staff_name = st.text_input(
             "宛先担当者名（苗字のみで可）", 
             value="", 
-            placeholder="例: satou (大槻の部分が上書きされます)",
-            help="入力すると、連絡書上部の担当者セル（大槻様の部分）に反映されます。"
+            placeholder="例: satou (大槻の部分が上書きされます)"
         )
 
-    # --- 4. 発注書の自動生成ビュー ---
+    # --- 3. 発注書の自動生成ビュー ---
     st.subheader("3. 発注書プレビュー")
     if selected_contractor != "--選択してください--":
         order_df = st.session_state.raw_df[st.session_state.raw_df['発注対象'] == True].copy()
@@ -386,7 +402,7 @@ if not st.session_state.raw_df.empty:
                     pdf_file_path = os.path.join(os.getcwd(), pdf_filename_input)
                     
                     if st.button("② この名前でPDFを作成する", type="secondary", use_container_width=True):
-                        with st.spinner("ExcelからPDFへ変換中... (※数秒かかります)"):
+                        with st.spinner("ExcelからPDFへ変換中..."):
                             try:
                                 convert_excel_to_pdf(excel_file_path, pdf_file_path)
                                 st.session_state["generated_pdf"] = pdf_file_path
