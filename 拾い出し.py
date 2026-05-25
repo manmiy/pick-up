@@ -121,32 +121,7 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 except:
                     pass
                 
-    # OSがLinuxなどの場合（Streamlit Cloud実行）
-    else:
-        try:
-            subprocess.run([
-                "libreoffice", "--headless", "--convert-to", "pdf", 
-                temp_excel, "--outdir", os.path.dirname(abs_pdf)
-            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
-            base_name = os.path.splitext(os.path.basename(temp_excel))[0]
-            lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
-            
-            if lo_pdf_path != abs_pdf:
-                if os.path.exists(abs_pdf):
-                    os.remove(abs_pdf)
-                os.rename(lo_pdf_path, abs_pdf)
-                
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
-        except Exception as e:
-            raise Exception(f"PDF変換エラー: {e}")
-        finally:
-            if os.path.exists(temp_excel):
-                try:
-                    os.remove(temp_excel)
-                except:
-                    pass
+  
 
 def generate_order_excel(order_df, selected_contractor, staff_name="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
