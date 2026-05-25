@@ -40,7 +40,7 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- 改善されたPDF変換ロジック ---
+# --- 🎯 改良されたPDF変換ロジック（余計なシートの排除） ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
@@ -71,23 +71,60 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     
     # OSがLinuxなどの場合（Streamlit Cloud実行環境）
     else:
+        # 💡 LibreOfficeが全シートをPDF化してしまうのを防ぐため、
+        # 裏側で「連絡書シートだけ」を残したPDF専用のテンポラリExcelを生成します。
+        temp_pdf_excel = abs_excel.replace(".xlsx", "_only_renraku.xlsx")
         try:
+            wb = openpyxl.load_workbook(abs_excel)
+            
+            # 連絡書シートの名前を特定
+            target_sheet_name = None
+            for sheet_name in wb.sheetnames:
+                if "連絡書" in sheet_name.strip():
+                    target_sheet_name = sheet_name
+                    break
+            if target_sheet_name is None:
+                target_sheet_name = wb.sheetnames[0]
+                
+            # 「連絡書」以外のすべてのシート（発注書など）をループで削除
+            for sheet in list(wb.sheetnames):
+                if sheet != target_sheet_name:
+                    wb.remove(wb[sheet])
+            
+            # 印刷範囲と1ページ集約設定が確実に効くように再セット
+            ws_renraku = wb[target_sheet_name]
+            ws_renraku.print_area = 'A1:H20'
+            ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
+            ws_renraku.page_setup.fitToWidth = 1
+            ws_renraku.page_setup.fitToHeight = 1
+            
+            # 連絡書だけになったExcelを一時保存
+            wb.save(temp_pdf_excel)
+            wb.close()
+            
+            # この「連絡書のみExcel」をLibreOfficeに投入することで、余計なページを完全遮断
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
-                abs_excel, "--outdir", os.path.dirname(abs_pdf)
+                temp_pdf_excel, "--outdir", os.path.dirname(abs_pdf)
             ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            base_name = os.path.splitext(os.path.basename(abs_excel))[0]
+            base_name = os.path.splitext(os.path.basename(temp_pdf_excel))[0]
             lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
             
             if lo_pdf_path != abs_pdf:
                 if os.path.exists(abs_pdf):
                     os.remove(abs_pdf)
                 os.rename(lo_pdf_path, abs_pdf)
+                
         except subprocess.CalledProcessError as e:
             raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
         except Exception as e:
             raise Exception(f"PDF変換エラー: {e}")
+        finally:
+            # 用が済んだ一時ファイルは綺麗に削除
+            if os.path.exists(temp_pdf_excel):
+                try: os.remove(temp_pdf_excel)
+                except: pass
 
 # --- Excel出力・書き込みロジック ---
 def generate_order_excel(order_df, selected_contractor, staff_name="", filename="拾い出し表.xlsx"):
@@ -163,7 +200,6 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
             if i >= num_items:
                 ws_renraku.cell(row=row_idx, column=1).value = None
         
-        # 🎯【openpyxlの正しい仕様に修正しました】
         ws_renraku.print_area = 'A1:H20'
         ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
