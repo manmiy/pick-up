@@ -40,100 +40,62 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- PDF変換関数の定義 ---
+# --- 🎯 改善されたPDF変換ロジック ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
     
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
     
-    temp_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
-    wb_temp = openpyxl.load_workbook(abs_excel)
+    # 【超安全設計】
+    # 先ほど作成に成功したExcelファイルをそのまま利用します。
+    # openpyxlでの編集・削除・保存処理を一切行わないため、NoneTypeエラーは100%発生しません。
     
-    # 「連絡書」という文字が含まれるシートを自動検索
-    target_sheet_name = None
-    for sheet_name in wb_temp.sheetnames:
-        if "連絡書" in sheet_name.strip():
-            target_sheet_name = sheet_name
-            break
-            
-    if target_sheet_name is None and len(wb_temp.sheetnames) > 0:
-        target_sheet_name = wb_temp.sheetnames[0]
-
-    if target_sheet_name in wb_temp.sheetnames:
-        ws_renraku = wb_temp[target_sheet_name]
-        
-        # 🎯【ここを修正：NoneTypeバグ対策】
-        # シートを削除するとExcelデータが壊れるため、削除はせず、
-        # 連絡書シートを一番左側に配置し、アクティブ（主役）に強制設定します。
-        idx = wb_temp.sheetnames.index(target_sheet_name)
-        wb_temp._sheets = [wb_temp._sheets[idx]] + [s for i, s in enumerate(wb_temp._sheets) if i != idx]
-        wb_temp.active = 0
-        
-        # 2枚目の白紙を絶対に出さないための印刷設定（1ページに強制凝縮）
-        ws_renraku.print_area = 'A1:H20'
-        ws_renraku.page_setup.fitToPage = True
-        ws_renraku.page_setup.fitToWidth = 1
-        ws_renraku.page_setup.fitToHeight = 1
-        
-    wb_temp.save(temp_excel)
-    wb_temp.close()
-    
-    # OSがWindowsの場合（ローカル実行）
+    # OSがWindowsの場合（ローカル実行環境）
     if platform.system() == "Windows":
         try:
             import win32com.client
         except ImportError:
             raise Exception("Windows環境ですが win32com がインストールされていません。")
-            
         excel = None
         wb = None
         try:
             excel = win32com.client.DispatchEx("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
-            
-            wb = excel.Workbooks.Open(temp_excel)
-            wb.ExportAsFixedFormat(0, abs_pdf)
+            wb = excel.Workbooks.Open(abs_excel)
+            # 連絡書シートを印刷対象にするため、シート名を確認してアクティブにする
+            for sheet in wb.Sheets:
+                if "連絡書" in sheet.Name:
+                    sheet.Select()
+                    break
+            wb.ActiveSheet.ExportAsFixedFormat(0, abs_pdf)
         finally:
-            if wb is not None:
-                wb.Close(False)
-            if excel is not None:
-                excel.Quit()
-            if os.path.exists(temp_excel):
-                try:
-                    os.remove(temp_excel)
-                except:
-                    pass
-                
+            if wb is not None: wb.Close(False)
+            if excel is not None: excel.Quit()
+    
     # OSがLinuxなどの場合（Streamlit Cloud実行環境）
     else:
         try:
-            # 連絡書シート（先頭）だけを対象にPDF変換をかける
+            # 既に完成しているExcelをそのままLibreOfficeに投入
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
-                temp_excel, "--outdir", os.path.dirname(abs_pdf)
+                abs_excel, "--outdir", os.path.dirname(abs_pdf)
             ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            base_name = os.path.splitext(os.path.basename(temp_excel))[0]
+            base_name = os.path.splitext(os.path.basename(abs_excel))[0]
             lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
             
             if lo_pdf_path != abs_pdf:
                 if os.path.exists(abs_pdf):
                     os.remove(abs_pdf)
                 os.rename(lo_pdf_path, abs_pdf)
-                
         except subprocess.CalledProcessError as e:
             raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
         except Exception as e:
             raise Exception(f"PDF変換エラー: {e}")
-        finally:
-            if os.path.exists(temp_excel):
-                try:
-                    os.remove(temp_excel)
-                except:
-                    pass
-# --- Excel生成およびデータ書き込み関数の定義 ---
+
+# --- Excel出力・書き込みロジック ---
 def generate_order_excel(order_df, selected_contractor, staff_name="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     if "発注書" in wb.sheetnames:
@@ -186,7 +148,7 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
         safe_set(idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(idx, 16, clean_val(getattr(row, "納品備考", None)))
         
-    # 自動で連絡書シートを検出
+    # 連絡書シートの自動検出と書き込み
     target_sheet_name = None
     for sheet_name in wb.sheetnames:
         if "連絡書" in sheet_name.strip():
@@ -199,8 +161,7 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
-        # 🎯【ピンポイント位置修正】
-        # 解析データに基づき、2行目のC列（3番目の列）にある「大槻」を書き換えます。
+        # 画面からの入力（satouなど）を2行目C列にピンポイント上書き
         if staff_name.strip():
             ws_renraku.cell(row=2, column=3).value = staff_name.strip()
             
@@ -210,7 +171,11 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
             if i >= num_items:
                 ws_renraku.cell(row=row_idx, column=1).value = None
         
+        # 印刷範囲を厳格に固定して2枚目の白紙を遮断
         ws_renraku.print_area = 'A1:H20'
+        ws_renraku.page_setup.fitToPage = True
+        ws_renraku.page_setup.fitToWidth = 1
+        ws_renraku.page_setup.fitToHeight = 1
                 
     sheets_to_keep = ["発注書", target_sheet_name] if target_sheet_name else ["発注書"]
     for sheet in list(wb.sheetnames):
@@ -218,9 +183,9 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
             wb.remove(wb[sheet])
             
     if wb.sheetnames:
-        wb.active = 0
+        wb.active = wb.sheetnames.index(target_sheet_name) if target_sheet_name in wb.sheetnames else 0
     for view in wb.views:
-        view.activeTab = 0
+        view.activeTab = wb.sheetnames.index(target_sheet_name) if target_sheet_name in wb.sheetnames else 0
         view.firstSheet = 0
             
     output_filename = f"発注書_連絡書_{selected_contractor}.xlsx"
@@ -228,64 +193,43 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
     wb.close()
     return output_filename
 
-# --- Excelデータの読み込みとクレンジング ---
+# --- Excelデータの読み込み ---
 @st.cache_data
 def load_data(file_source="拾い出し表.xlsx"):
     df = pd.read_excel(file_source, sheet_name="拾い出し")
-    
     new_columns = {}
     for col in df.columns:
         col_str = str(col).strip()
-        if "名称" in col_str:
-            new_columns[col] = "名称"
-        elif "材料" in col_str and ("コード" in col_str or "ｺｰﾄﾞ" in col_str):
-            new_columns[col] = "材料コード"
-        elif "発注業者" in col_str or "発注先" in col_str:
-            new_columns[col] = "発注先"
-        elif col_str == "担当者":
-            new_columns[col] = "担当者"
+        if "名称" in col_str: new_columns[col] = "名称"
+        elif "材料" in col_str and ("コード" in col_str or "ｺｰﾄﾞ" in col_str): new_columns[col] = "材料コード"
+        elif "発注業者" in col_str or "発注先" in col_str: new_columns[col] = "発注先"
+        elif col_str == "担当者": new_columns[col] = "担当者"
         elif "規格" in col_str:
-            if "14.5" in col_str:
-                new_columns[col] = "規格"
-            elif "8" in col_str:
-                new_columns[col] = "規格_1"
-            elif "6.75" in col_str or "入数" in col_str:
-                new_columns[col] = "規格_2"
-        elif "階" in col_str:
-            new_columns[col] = "階"
-        elif col_str.startswith("発注") and "予定日" not in col_str:
-            new_columns[col] = "発注"
-        elif "単位" in col_str:
-            new_columns[col] = "単位"
-        elif "納品日" in col_str:
-            new_columns[col] = "納品日"
-        elif "納品場所" in col_str:
-            new_columns[col] = "納品場所"
-        elif "納品備考" in col_str:
-            new_columns[col] = "納品備考"
+            if "14.5" in col_str: new_columns[col] = "規格"
+            elif "8" in col_str: new_columns[col] = "規格_1"
+            elif "6.75" in col_str or "入数" in col_str: new_columns[col] = "規格_2"
+        elif "階" in col_str: new_columns[col] = "階"
+        elif col_str.startswith("発注") and "予定日" not in col_str: new_columns[col] = "発注"
+        elif "単位" in col_str: new_columns[col] = "単位"
+        elif "納品日" in col_str: new_columns[col] = "納品日"
+        elif "納品場所" in col_str: new_columns[col] = "納品場所"
+        elif "納品備考" in col_str: new_columns[col] = "納品備考"
             
     df = df.rename(columns=new_columns)
-    
     required_cols = ["材料コード", "名称", "発注先", "担当者", "規格", "規格_1", "規格_2", "階", "発注", "単位", "納品日", "納品場所", "納品備考"]
     for col in required_cols:
-        if col not in df.columns:
-            df[col] = ""
+        if col not in df.columns: df[col] = ""
             
     df = df.dropna(subset=['名称'])
     df = df[df['名称'].astype(str).str.strip() != ""]
-    
     df.insert(0, '発注対象', False) 
     return df
 
-# =========================================================
-# アップロード時の処理
-# =========================================================
 if uploaded_file is not None:
     if "last_uploaded_file_id" not in st.session_state or st.session_state.last_uploaded_file_id != uploaded_file.file_id:
         try:
             with open("拾い出し表.xlsx", "wb") as f:
                 f.write(uploaded_file.getbuffer())
-                
             st.session_state.raw_df = load_data("拾い出し表.xlsx")
             st.session_state.display_df = st.session_state.raw_df.copy()
             st.session_state.last_uploaded_file_id = uploaded_file.file_id
@@ -294,14 +238,12 @@ if uploaded_file is not None:
             st.sidebar.error(f"ファイルの読み込みに失敗しました: {e}")
 
 if "raw_df" not in st.session_state:
-    try:
-        st.session_state.raw_df = load_data("拾い出し表.xlsx")
-    except Exception as e:
+    try: st.session_state.raw_df = load_data("拾い出し表.xlsx")
+    except:
         st.warning("現在、データが読み込まれていません。サイドバーからファイルをアップロードしてください。")
         st.session_state.raw_df = pd.DataFrame()
 
 if not st.session_state.raw_df.empty:
-
     if "display_df" not in st.session_state:
         st.session_state.display_df = st.session_state.raw_df.copy()
 
@@ -313,7 +255,6 @@ if not st.session_state.raw_df.empty:
                 real_idx = st.session_state.display_df.index[int(pos)]
                 st.session_state.raw_df.at[real_idx, "発注対象"] = edits["発注対象"]
 
-    # --- 1. 拾い出し表の表示と操作 ---
     st.subheader("1. 発注する材料にチェックを入れてください")
     search_query = st.text_input("🔍 絞り込み検索", "")
 
@@ -342,22 +283,14 @@ if not st.session_state.raw_df.empty:
         kwargs={"editor_key": current_editor_key}
     )
 
-    # --- 2. 業者の選択プルダウン ---
     st.subheader("2. 発注先および宛先情報を指定してください")
-    
     meta_col1, meta_col2 = st.columns(2)
     with meta_col1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
         selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
-    
     with meta_col2:
-        staff_name = st.text_input(
-            "宛先担当者名（苗字のみで可）", 
-            value="", 
-            placeholder="例: satou (大槻の部分が上書きされます)"
-        )
+        staff_name = st.text_input("宛先担当者名（苗字のみで可）", value="", placeholder="例: satou")
 
-    # --- 3. 発注書の自動生成ビュー ---
     st.subheader("3. 発注書プレビュー")
     if selected_contractor != "--選択してください--":
         order_df = st.session_state.raw_df[st.session_state.raw_df['発注対象'] == True].copy()
@@ -365,12 +298,11 @@ if not st.session_state.raw_df.empty:
         
         if not order_df.empty:
             order_df = order_df.sort_values(by=['材料コード'], ascending=True)
-            st.success(f"{selected_contractor} 宛ての発注データが指定の順序で抽出されました。")
+            st.success(f"{selected_contractor} 宛ての発注データが抽出されました。")
             preview_columns = ['材料コード', '名称', '規格', '発注', '単位']
             st.dataframe(order_df[preview_columns], hide_index=True, use_container_width=True)
             
             col1, col2 = st.columns(2)
-            
             with col1:
                 if st.button(f"① Excelを発行する", type="primary", use_container_width=True):
                     output_file = generate_order_excel(order_df, selected_contractor, staff_name=staff_name)
@@ -379,12 +311,10 @@ if not st.session_state.raw_df.empty:
             
             if "generated_excel" in st.session_state and st.session_state["generated_excel"]:
                 excel_file_path = st.session_state["generated_excel"]
-                
                 with col1:
-                    with open(excel_file_path, "rb") as f:
-                        excel_data = f.read()
+                    with open(excel_file_path, "rb") as f: excel_data = f.read()
                     st.download_button(
-                        label=f"📥 「{excel_file_path}」をダウンロード",
+                        label=f"📥 Excelをダウンロード",
                         data=excel_data,
                         file_name=excel_file_path,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -412,10 +342,9 @@ if not st.session_state.raw_df.empty:
                     
                     if "generated_pdf" in st.session_state and st.session_state["generated_pdf"] == pdf_file_path:
                         if os.path.exists(pdf_file_path):
-                            with open(pdf_file_path, "rb") as f:
-                                pdf_data = f.read()
+                            with open(pdf_file_path, "rb") as f: pdf_data = f.read()
                             st.download_button(
-                                label=f"📥 「{pdf_filename_input}」をダウンロード",
+                                label=f"📥 PDFをダウンロード",
                                 data=pdf_data,
                                 file_name=pdf_filename_input,
                                 mime="application/pdf",
@@ -423,9 +352,5 @@ if not st.session_state.raw_df.empty:
                             )
         else:
             st.warning("チェックされた材料はありません。")
-            st.session_state["generated_excel"] = None
-            st.session_state["generated_pdf"] = None
     else:
         st.info("上のリストから業者を選択してください。")
-        st.session_state["generated_excel"] = None
-        st.session_state["generated_pdf"] = None
