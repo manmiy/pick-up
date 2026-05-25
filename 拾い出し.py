@@ -4,7 +4,6 @@ import openpyxl
 import os
 import platform
 import subprocess
-import copy
 from datetime import datetime
 
 st.set_page_config(page_title="自動発注システム", layout="wide")
@@ -41,14 +40,14 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- 🎯 完全に安定化したPDF変換ロジック ---
+# --- 🎯 安全なPDF変換ロジック ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
     
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
     
-    # OSがWindowsの場合（ローカル実行環境）
+    # OSがWindowsの場合
     if platform.system() == "Windows":
         try:
             import win32com.client
@@ -70,118 +69,83 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
             if wb is not None: wb.Close(False)
             if excel is not None: excel.Quit()
     
-    # OSがLinuxなどの場合（Streamlit Cloud実行環境）
+    # OSがLinuxなどの場合（Streamlit Cloud環境）
     else:
-        # パス構築でのエラーを防ぐため、安全な別名でPDF用の一時Excelを出力します
-        dir_name = os.path.dirname(abs_excel)
-        base_name = os.path.splitext(os.path.basename(abs_excel))[0]
-        temp_pdf_excel = os.path.join(dir_name, f"tmp_pdf_{base_name}.xlsx")
-        
+        # LibreOfficeにExcelをそのまま渡してPDF化
         try:
-            wb = openpyxl.load_workbook(abs_excel)
-            
-            target_sheet_name = None
-            for sheet_name in wb.sheetnames:
-                if "連絡書" in sheet_name.strip():
-                    target_sheet_name = sheet_name
-                    break
-            if target_sheet_name is None:
-                target_sheet_name = wb.sheetnames[0]
-                
-            # 「連絡書」以外のすべてのシートを確実に削除
-            for sheet in list(wb.sheetnames):
-                if sheet != target_sheet_name:
-                    wb.remove(wb[sheet])
-            
-            ws_renraku = wb[target_sheet_name]
-            ws_renraku.print_area = 'A1:H20'
-            ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
-            ws_renraku.page_setup.fitToWidth = 1
-            ws_renraku.page_setup.fitToHeight = 1
-            
-            wb.save(temp_pdf_excel)
-            wb.close()
-            
-            # LibreOfficeを呼び出してPDFへ変換
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
-                temp_pdf_excel, "--outdir", os.path.dirname(abs_pdf)
+                abs_excel, "--outdir", os.path.dirname(abs_pdf)
             ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            # LibreOfficeが生成したデフォルト名のPDFパスを特定
-            generated_pdf_name = f"tmp_pdf_{base_name}.pdf"
-            lo_output_pdf = os.path.join(os.path.dirname(abs_pdf), generated_pdf_name)
+            base_name = os.path.splitext(os.path.basename(abs_excel))[0]
+            lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
             
-            # ユーザーが指定した理想のファイル名にリネーム
-            if os.path.exists(lo_output_pdf):
+            if lo_pdf_path != abs_pdf:
                 if os.path.exists(abs_pdf):
                     os.remove(abs_pdf)
-                os.rename(lo_output_pdf, abs_pdf)
-            else:
-                raise FileNotFoundError(f"LibreOfficeによるPDF生成が確認できませんでした。: {lo_output_pdf}")
-                
+                os.rename(lo_pdf_path, abs_pdf)
         except subprocess.CalledProcessError as e:
             raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
         except Exception as e:
-            raise Exception(f"PDF変換プロセス内でエラーが発生しました: {e}")
-        finally:
-            if os.path.exists(temp_pdf_excel):
-                try: os.remove(temp_pdf_excel)
-                except: pass
+            raise Exception(f"PDF変換エラー: {e}")
 
-# --- Excel出力・書き込みロジック ---
-def generate_order_excel(order_df, selected_contractor, staff_name="", filename="拾い出し表.xlsx"):
+# --- 🎯 関数に頼らず「直接セルへデータを書き込む」新ロジック ---
+def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
+    
     if "発注書" in wb.sheetnames:
         ws = wb["発注書"]
     else:
         ws = wb.create_sheet("発注書")
         
-    def safe_set(row, col, value):
-        cell = ws.cell(row=row, column=col)
+    def safe_set(sheet_obj, row, col, value):
+        cell = sheet_obj.cell(row=row, column=col)
         if not isinstance(cell, openpyxl.cell.cell.MergedCell):
             cell.value = value
+            
+    def clean_val(val):
+        if pd.isna(val) or val == "NaN":
+            return ""
+        return val
 
+    # 1. 【発注書】シートへのデータ書き込み
     max_row = ws.max_row
     if max_row >= 2:
         for r in range(2, max_row + 1):
             for c in range(1, 17):
-                safe_set(r, c, None)
+                safe_set(ws, r, c, None)
                 
     today_str = datetime.now().strftime("%Y/%m/%d")
     
     for idx, row in enumerate(order_df.itertuples(), start=2):
-        safe_set(idx, 1, getattr(row, "材料コード", None))
-        safe_set(idx, 2, today_str)
-        safe_set(idx, 5, getattr(row, "発注先", None))
-        safe_set(idx, 6, getattr(row, "担当者", None))
-        safe_set(idx, 7, getattr(row, "名称", None))
-        safe_set(idx, 8, getattr(row, "規格", None))
-        safe_set(idx, 9, getattr(row, "規格_1", None))
-        safe_set(idx, 10, getattr(row, "規格_2", None))
+        safe_set(ws, idx, 1, getattr(row, "材料コード", None))
+        safe_set(ws, idx, 2, today_str)
+        safe_set(ws, idx, 5, getattr(row, "発注先", None))
+        safe_set(ws, idx, 6, getattr(row, "担当者", None))
+        safe_set(ws, idx, 7, getattr(row, "名称", None))
+        safe_set(ws, idx, 8, getattr(row, "規格", None))
+        safe_set(ws, idx, 9, getattr(row, "規格_1", None))
+        safe_set(ws, idx, 10, getattr(row, "規格_2", None))
         
-        def clean_val(val):
-            if pd.isna(val) or val == "NaN":
-                return ""
-            return val
-            
-        safe_set(idx, 11, clean_val(getattr(row, "階", None)))
-        safe_set(idx, 12, clean_val(getattr(row, "発注", None)))
-        safe_set(idx, 13, clean_val(getattr(row, "単位", None)))
+        safe_set(ws, idx, 11, clean_val(getattr(row, "階", None)))
+        safe_set(ws, idx, 12, clean_val(getattr(row, "発注", None)))
+        safe_set(ws, idx, 13, clean_val(getattr(row, "単位", None)))
         
         ndate = getattr(row, "納品日", None)
         if pd.notna(ndate) and ndate != "NaN":
             if isinstance(ndate, datetime):
-                safe_set(idx, 14, ndate.strftime("%Y/%m/%d"))
+                safe_set(ws, idx, 14, ndate.strftime("%Y/%m/%d"))
             else:
                 val_str = str(ndate).split(" ")[0]
-                safe_set(idx, 14, val_str)
+                safe_set(ws, idx, 14, val_str)
         else:
-            safe_set(idx, 14, "")
+            safe_set(ws, idx, 14, "")
             
-        safe_set(idx, 15, clean_val(getattr(row, "納品場所", None)))
-        safe_set(idx, 16, clean_val(getattr(row, "納品備考", None)))
+        safe_set(ws, idx, 15, clean_val(getattr(row, "納品場所", None)))
+        safe_set(ws, idx, 16, clean_val(getattr(row, "納品備考", None)))
         
+    # 2. 【連絡書】シートへの直接書き込み（関数エラーの防止）
     target_sheet_name = None
     for sheet_name in wb.sheetnames:
         if "連絡書" in sheet_name.strip():
@@ -194,32 +158,47 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
+        # 🎯 件名・宛先を直接上書き
         if staff_name.strip():
-            ws_renraku.cell(row=2, column=3).value = staff_name.strip()
+            ws_renraku.cell(row=2, column=3).value = staff_name.strip() # C2セル（担当者名）
             
+        if project_title.strip():
+            # 💡 件名が入るセル（「白石送電事務所...」の場所）を指定。
+            # 画像の配置からB4セルまたはC4セルと推測しています。ズレる場合は row=4, column=3 などに変更してください。
+            ws_renraku.cell(row=4, column=2).value = project_title.strip() 
+
+        # 🎯 明細行（5行目〜18行目）に発注データを直接流し込む
         num_items = len(order_df)
         for i in range(14):
             row_idx = 5 + i
-            if i >= num_items:
-                ws_renraku.cell(row=row_idx, column=1).value = None
+            if i < num_items:
+                item = order_df.iloc[i]
+                # B列(名称), C列(規格/数量), F列(数量) などへ直接文字を入れます
+                # テンプレートの列配置に合わせて適宜調整してください
+                ws_renraku.cell(row=row_idx, column=2).value = clean_val(item.get("名称", ""))
+                ws_renraku.cell(row=row_idx, column=3).value = clean_val(item.get("規格", ""))
+                
+                place_str = f"{clean_val(item.get('階', ''))} {clean_val(item.get('納品場所', ''))}".strip()
+                ws_renraku.cell(row=row_idx, column=4).value = place_str
+                ws_renraku.cell(row=row_idx, column=5).value = clean_val(item.get("納品備考", ""))
+                ws_renraku.cell(row=row_idx, column=6).value = clean_val(item.get("発注", ""))
+                ws_renraku.cell(row=row_idx, column=7).value = clean_val(item.get("単位", ""))
+            else:
+                # データがない行の数式や不要な文字をクリアする
+                for col_idx in range(2, 8):
+                    ws_renraku.cell(row=row_idx, column=col_idx).value = None
         
+        # 印刷設定の固定
         ws_renraku.print_area = 'A1:H20'
         ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
         ws_renraku.page_setup.fitToHeight = 1
                 
-    sheets_to_keep = ["発注書", target_sheet_name] if target_sheet_name else ["発注書"]
-    for sheet in list(wb.sheetnames):
-        if sheet not in sheets_to_keep:
-            wb.remove(wb[sheet])
+    # PDFの一覧性を保つため、完成した直後に「発注書」を消し、「連絡書」だけがPDF化されるようにする
+    if "発注書" in wb.sheetnames and len(wb.sheetnames) > 1:
+        wb.remove(wb["発注書"])
             
-    if wb.sheetnames:
-        wb.active = wb.sheetnames.index(target_sheet_name) if target_sheet_name in wb.sheetnames else 0
-    for view in wb.views:
-        view.activeTab = wb.sheetnames.index(target_sheet_name) if target_sheet_name in wb.sheetnames else 0
-        view.firstSheet = 0
-            
-    output_filename = f"発注書_連絡書_{selected_contractor}.xlsx"
+    output_filename = f"連絡書_{selected_contractor}.xlsx"
     wb.save(output_filename)
     wb.close()
     return output_filename
@@ -315,10 +294,13 @@ if not st.session_state.raw_df.empty:
     )
 
     st.subheader("2. 発注先および宛先情報を指定してください")
+    
+    # 🎯 UIに「件名」を追加
     meta_col1, meta_col2 = st.columns(2)
     with meta_col1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
         selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
+        project_title = st.text_input("件名（現場名など）", value="白石送電事務所 新築工事")
     with meta_col2:
         staff_name = st.text_input("宛先担当者名（苗字のみで可）", value="", placeholder="例: satou")
 
@@ -336,7 +318,7 @@ if not st.session_state.raw_df.empty:
             col1, col2 = st.columns(2)
             with col1:
                 if st.button(f"① Excelを発行する", type="primary", use_container_width=True):
-                    output_file = generate_order_excel(order_df, selected_contractor, staff_name=staff_name)
+                    output_file = generate_order_excel(order_df, selected_contractor, project_title=project_title, staff_name=staff_name)
                     st.session_state["generated_excel"] = output_file
                     st.toast("Excelを発行しました！", icon="🎉")
             
@@ -357,7 +339,7 @@ if not st.session_state.raw_df.empty:
                     mat_code = str(order_df.iloc[0]['材料コード'])
                     vendor_name = selected_contractor
                     now_str = datetime.now().strftime("%Y%m%d_%H%M")
-                    default_pdf_name = f"{mat_code}_{vendor_name}_{now_str}.pdf"
+                    default_pdf_name = f"連絡書_{vendor_name}_{now_str}.pdf"
                     
                     pdf_filename_input = st.text_input("保存するPDFのファイル名", value=default_pdf_name)
                     pdf_file_path = os.path.join(os.getcwd(), pdf_filename_input)
