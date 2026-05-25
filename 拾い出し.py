@@ -4,6 +4,7 @@ import openpyxl
 import os
 import platform
 import subprocess
+import copy
 from datetime import datetime
 
 st.set_page_config(page_title="自動発注システム", layout="wide")
@@ -40,7 +41,7 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- 🎯 改良されたPDF変換ロジック（余計なシートの排除） ---
+# --- 🎯 完全に安定化したPDF変換ロジック ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
@@ -71,13 +72,14 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     
     # OSがLinuxなどの場合（Streamlit Cloud実行環境）
     else:
-        # 💡 LibreOfficeが全シートをPDF化してしまうのを防ぐため、
-        # 裏側で「連絡書シートだけ」を残したPDF専用のテンポラリExcelを生成します。
-        temp_pdf_excel = abs_excel.replace(".xlsx", "_only_renraku.xlsx")
+        # パス構築でのエラーを防ぐため、安全な別名でPDF用の一時Excelを出力します
+        dir_name = os.path.dirname(abs_excel)
+        base_name = os.path.splitext(os.path.basename(abs_excel))[0]
+        temp_pdf_excel = os.path.join(dir_name, f"tmp_pdf_{base_name}.xlsx")
+        
         try:
             wb = openpyxl.load_workbook(abs_excel)
             
-            # 連絡書シートの名前を特定
             target_sheet_name = None
             for sheet_name in wb.sheetnames:
                 if "連絡書" in sheet_name.strip():
@@ -86,42 +88,43 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
             if target_sheet_name is None:
                 target_sheet_name = wb.sheetnames[0]
                 
-            # 「連絡書」以外のすべてのシート（発注書など）をループで削除
+            # 「連絡書」以外のすべてのシートを確実に削除
             for sheet in list(wb.sheetnames):
                 if sheet != target_sheet_name:
                     wb.remove(wb[sheet])
             
-            # 印刷範囲と1ページ集約設定が確実に効くように再セット
             ws_renraku = wb[target_sheet_name]
             ws_renraku.print_area = 'A1:H20'
             ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
             ws_renraku.page_setup.fitToWidth = 1
             ws_renraku.page_setup.fitToHeight = 1
             
-            # 連絡書だけになったExcelを一時保存
             wb.save(temp_pdf_excel)
             wb.close()
             
-            # この「連絡書のみExcel」をLibreOfficeに投入することで、余計なページを完全遮断
+            # LibreOfficeを呼び出してPDFへ変換
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
                 temp_pdf_excel, "--outdir", os.path.dirname(abs_pdf)
             ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            base_name = os.path.splitext(os.path.basename(temp_pdf_excel))[0]
-            lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
+            # LibreOfficeが生成したデフォルト名のPDFパスを特定
+            generated_pdf_name = f"tmp_pdf_{base_name}.pdf"
+            lo_output_pdf = os.path.join(os.path.dirname(abs_pdf), generated_pdf_name)
             
-            if lo_pdf_path != abs_pdf:
+            # ユーザーが指定した理想のファイル名にリネーム
+            if os.path.exists(lo_output_pdf):
                 if os.path.exists(abs_pdf):
                     os.remove(abs_pdf)
-                os.rename(lo_pdf_path, abs_pdf)
+                os.rename(lo_output_pdf, abs_pdf)
+            else:
+                raise FileNotFoundError(f"LibreOfficeによるPDF生成が確認できませんでした。: {lo_output_pdf}")
                 
         except subprocess.CalledProcessError as e:
             raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
         except Exception as e:
-            raise Exception(f"PDF変換エラー: {e}")
+            raise Exception(f"PDF変換プロセス内でエラーが発生しました: {e}")
         finally:
-            # 用が済んだ一時ファイルは綺麗に削除
             if os.path.exists(temp_pdf_excel):
                 try: os.remove(temp_pdf_excel)
                 except: pass
