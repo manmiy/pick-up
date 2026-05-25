@@ -49,7 +49,6 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
     
     # PDF出力専用の一時ファイルを作成（「連絡書」のみを表示状態にし、他は非表示にする）
-    # ※削除すると数式エラー（#REF!）になるため「非表示（hidden）」にしてPDF出力対象から外す
     temp_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
     wb_temp = openpyxl.load_workbook(abs_excel)
     for sheet in list(wb_temp.sheetnames):
@@ -68,15 +67,11 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
         excel = None
         wb = None
         try:
-            # win32comでExcelをバックグラウンド起動
             excel = win32com.client.DispatchEx("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
             
-            # 一時ファイルを開く
             wb = excel.Workbooks.Open(temp_excel)
-            
-            # PDFとして保存 (0 = xlTypePDF)
             wb.ExportAsFixedFormat(0, abs_pdf)
         finally:
             if wb is not None:
@@ -92,13 +87,11 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     # OSがLinuxなどの場合（Streamlit Cloud実行）
     else:
         try:
-            # LibreOfficeを使ってPDFに変換
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
                 temp_excel, "--outdir", os.path.dirname(abs_pdf)
             ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            # LibreOfficeは元のファイル名.pdfで出力するため、指定されたファイル名に変更する
             base_name = os.path.splitext(os.path.basename(temp_excel))[0]
             lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
             
@@ -118,7 +111,8 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 except:
                     pass
 
-def generate_order_excel(order_df, selected_contractor, filename="拾い出し表.xlsx"):
+# 🛠【変更】引数に `staff_name`（苗字）を追加
+def generate_order_excel(order_df, selected_contractor, staff_name="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     if "発注書" in wb.sheetnames:
         ws = wb["発注書"]
@@ -167,21 +161,25 @@ def generate_order_excel(order_df, selected_contractor, filename="拾い出し�
         else:
             safe_set(idx, 14, "")
             
-        safe_set(idx, 15, clean_val(getattr(row, "納品場所", None)))
+        # 🛠【変更】納品場所の後に苗字（〇〇様）を結合するロジック
+        base_location = clean_val(getattr(row, "納品場所", None))
+        if staff_name.strip():
+            # 苗字が入力されている場合は「納品場所 〇〇様」とする
+            full_location = f"{base_location} {staff_name.strip()}様"
+        else:
+            full_location = base_location
+            
+        safe_set(idx, 15, full_location)
         safe_set(idx, 16, clean_val(getattr(row, "納品備考", None)))
         
-    # 連絡書シートの箇条書き（□）の数を発注数に合わせる
     if "連絡書" in wb.sheetnames:
         ws_renraku = wb["連絡書"]
         num_items = len(order_df)
-        # 連絡書シートの A5 〜 A18 の「□」を制御
-        for i in range(14):  # 最大14行分
+        for i in range(14):
             row_idx = 5 + i
             if i >= num_items:
-                # 発注数を超えた行の箇条書きマークを消去
                 ws_renraku.cell(row=row_idx, column=1).value = None
         
-        # 不要な白紙ページ（右端や下部の見切れた罫線など）がPDF化されないように印刷範囲を固定する
         ws_renraku.print_area = 'A1:H20'
                 
     sheets_to_keep = ["発注書", "連絡書"]
@@ -265,7 +263,6 @@ if uploaded_file is not None:
         except Exception as e:
             st.sidebar.error(f"ファイルの読み込みに失敗しました: {e}")
 
-# 1. データの読み込み（初回のみ）
 if "raw_df" not in st.session_state:
     try:
         st.session_state.raw_df = load_data("拾い出し表.xlsx")
@@ -273,7 +270,6 @@ if "raw_df" not in st.session_state:
         st.warning("現在、データが読み込まれていません。サイドバーから「拾い出し表.xlsx」をアップロードしてください。")
         st.session_state.raw_df = pd.DataFrame()
 
-# メイン処理（データが正常に読み込まれている場合のみ実行）
 if not st.session_state.raw_df.empty:
 
     if "display_df" not in st.session_state:
@@ -318,9 +314,22 @@ if not st.session_state.raw_df.empty:
     )
 
     # --- 3. 業者の選択プルダウン ---
-    st.subheader("2. 発注先を選択してください")
-    contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
-    selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
+    st.subheader("2. 発注先および宛先情報を指定してください")
+    
+    # 🛠【変更】レイアウトを2カラムにして、業者選択と苗字入力を横並びに配置
+    meta_col1, meta_col2 = st.columns(2)
+    with meta_col1:
+        contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
+        selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
+    
+    with meta_col2:
+        # 🛠【追加】フリーテキストで苗字を打てるUI
+        staff_name = st.text_input(
+            "納品場所の担当者（苗字）", 
+            value="", 
+            placeholder="例: 山田 (空欄なら『様』は付きません)",
+            help="入力すると、Excelの納品場所に『[元の場所] 〇〇様』として出力されます。"
+        )
 
     # --- 4. 発注書の自動生成ビュー ---
     st.subheader("3. 発注書プレビュー")
@@ -339,15 +348,14 @@ if not st.session_state.raw_df.empty:
             
             with col1:
                 if st.button(f"① Excelを発行する", type="primary", use_container_width=True):
-                    output_file = generate_order_excel(order_df, selected_contractor)
+                    # 🛠【変更】関数に `staff_name` を渡す
+                    output_file = generate_order_excel(order_df, selected_contractor, staff_name=staff_name)
                     st.session_state["generated_excel"] = output_file
                     st.toast("Excelを発行しました！", icon="🎉")
             
-            # Excelが生成されている場合のみ、ダウンロードとPDF変換のUIを活性化
             if "generated_excel" in st.session_state and st.session_state["generated_excel"]:
                 excel_file_path = st.session_state["generated_excel"]
                 
-                # col1側でExcelダウンロードを提供
                 with col1:
                     with open(excel_file_path, "rb") as f:
                         excel_data = f.read()
@@ -361,7 +369,6 @@ if not st.session_state.raw_df.empty:
                 
                 with col2:
                     st.markdown("### PDFへ変換")
-                    # PDFに名前をつけて保存できるようなUI
                     mat_code = str(order_df.iloc[0]['材料コード'])
                     vendor_name = selected_contractor
                     now_str = datetime.now().strftime("%Y%m%d_%H%M")
@@ -370,7 +377,6 @@ if not st.session_state.raw_df.empty:
                     pdf_filename_input = st.text_input("保存するPDFのファイル名", value=default_pdf_name)
                     pdf_file_path = os.path.join(os.getcwd(), pdf_filename_input)
                     
-                    # PDF変換ボタン
                     if st.button("② この名前でPDFを作成する", type="secondary", use_container_width=True):
                         with st.spinner("ExcelからPDFへ変換中... (※数秒かかります)"):
                             try:
@@ -380,7 +386,6 @@ if not st.session_state.raw_df.empty:
                             except Exception as e:
                                 st.error(f"PDF変換エラー: {e}")
                     
-                    # PDFが生成されている場合のみ、PDFダウンロードボタンを表示
                     if "generated_pdf" in st.session_state and st.session_state["generated_pdf"] == pdf_file_path:
                         if os.path.exists(pdf_file_path):
                             with open(pdf_file_path, "rb") as f:
@@ -394,7 +399,6 @@ if not st.session_state.raw_df.empty:
                             )
         else:
             st.warning("チェックされた材料はありません。")
-            # 選択が変わったらクリア
             st.session_state["generated_excel"] = None
             st.session_state["generated_pdf"] = None
     else:
