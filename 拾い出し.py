@@ -180,6 +180,9 @@ def generate_order_excel(order_df, selected_contractor, filename="拾い出し�
             if i >= num_items:
                 # 発注数を超えた行の箇条書きマークを消去
                 ws_renraku.cell(row=row_idx, column=1).value = None
+        
+        # 不要な白紙ページ（右端や下部の見切れた罫線など）がPDF化されないように印刷範囲を固定する
+        ws_renraku.print_area = 'A1:H20'
                 
     sheets_to_keep = ["発注書", "連絡書"]
     for sheet in list(wb.sheetnames):
