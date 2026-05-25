@@ -50,27 +50,27 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     temp_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
     wb_temp = openpyxl.load_workbook(abs_excel)
     
-    # 【シート自動検出ロジック】
-    # 「連絡書」という文字が含まれるシートを自動で探します（指定不要にするため）
+    # 「連絡書」という文字が含まれるシートを自動検索
     target_sheet_name = None
     for sheet_name in wb_temp.sheetnames:
         if "連絡書" in sheet_name.strip():
             target_sheet_name = sheet_name
             break
             
-    # もし見つからなければ、1番目のシートを対象にする（NoneTypeエラーを絶対に防ぐ安全策）
     if target_sheet_name is None and len(wb_temp.sheetnames) > 0:
         target_sheet_name = wb_temp.sheetnames[0]
 
-    # 対象の連絡書シートだけを残して他をすべて削除（PDF化の不具合を防ぐ）
-    for sheet in list(wb_temp.sheetnames):
-        if sheet != target_sheet_name:
-            wb_temp.remove(wb_temp[sheet])
-            
     if target_sheet_name in wb_temp.sheetnames:
         ws_renraku = wb_temp[target_sheet_name]
         
-        # 2枚目の白紙を絶対に出さないための印刷設定（1ページに強制収める）
+        # 🎯【ここを修正：NoneTypeバグ対策】
+        # シートを削除するとExcelデータが壊れるため、削除はせず、
+        # 連絡書シートを一番左側に配置し、アクティブ（主役）に強制設定します。
+        idx = wb_temp.sheetnames.index(target_sheet_name)
+        wb_temp._sheets = [wb_temp._sheets[idx]] + [s for i, s in enumerate(wb_temp._sheets) if i != idx]
+        wb_temp.active = 0
+        
+        # 2枚目の白紙を絶対に出さないための印刷設定（1ページに強制凝縮）
         ws_renraku.print_area = 'A1:H20'
         ws_renraku.page_setup.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
@@ -109,6 +109,7 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     # OSがLinuxなどの場合（Streamlit Cloud実行環境）
     else:
         try:
+            # 連絡書シート（先頭）だけを対象にPDF変換をかける
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
                 temp_excel, "--outdir", os.path.dirname(abs_pdf)
@@ -132,7 +133,6 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                     os.remove(temp_excel)
                 except:
                     pass
-
 # --- Excel生成およびデータ書き込み関数の定義 ---
 def generate_order_excel(order_df, selected_contractor, staff_name="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
