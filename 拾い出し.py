@@ -48,6 +48,16 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     # 保存先フォルダの作成
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
     
+    # PDF出力専用の一時ファイルを作成（「連絡書」のみを表示状態にし、他は非表示にする）
+    # ※削除すると数式エラー（#REF!）になるため「非表示（hidden）」にしてPDF出力対象から外す
+    temp_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
+    wb_temp = openpyxl.load_workbook(abs_excel)
+    for sheet in list(wb_temp.sheetnames):
+        if sheet != "連絡書":
+            wb_temp[sheet].sheet_state = 'hidden'
+    wb_temp.save(temp_excel)
+    wb_temp.close()
+    
     # OSがWindowsの場合（ローカル実行）
     if platform.system() == "Windows":
         try:
@@ -63,8 +73,8 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
             excel.Visible = False
             excel.DisplayAlerts = False
             
-            # ワークブックを開く
-            wb = excel.Workbooks.Open(abs_excel)
+            # 一時ファイルを開く
+            wb = excel.Workbooks.Open(temp_excel)
             
             # PDFとして保存 (0 = xlTypePDF)
             wb.ExportAsFixedFormat(0, abs_pdf)
@@ -73,6 +83,11 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 wb.Close(False)
             if excel is not None:
                 excel.Quit()
+            if os.path.exists(temp_excel):
+                try:
+                    os.remove(temp_excel)
+                except:
+                    pass
                 
     # OSがLinuxなどの場合（Streamlit Cloud実行）
     else:
@@ -80,11 +95,11 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
             # LibreOfficeを使ってPDFに変換
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
-                abs_excel, "--outdir", os.path.dirname(abs_pdf)
+                temp_excel, "--outdir", os.path.dirname(abs_pdf)
             ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
             # LibreOfficeは元のファイル名.pdfで出力するため、指定されたファイル名に変更する
-            base_name = os.path.splitext(os.path.basename(abs_excel))[0]
+            base_name = os.path.splitext(os.path.basename(temp_excel))[0]
             lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
             
             if lo_pdf_path != abs_pdf:
@@ -96,6 +111,12 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
             raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
         except Exception as e:
             raise Exception(f"PDF変換エラー: {e}")
+        finally:
+            if os.path.exists(temp_excel):
+                try:
+                    os.remove(temp_excel)
+                except:
+                    pass
 
 def generate_order_excel(order_df, selected_contractor, filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
@@ -149,6 +170,17 @@ def generate_order_excel(order_df, selected_contractor, filename="拾い出し�
         safe_set(idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(idx, 16, clean_val(getattr(row, "納品備考", None)))
         
+    # 連絡書シートの箇条書き（□）の数を発注数に合わせる
+    if "連絡書" in wb.sheetnames:
+        ws_renraku = wb["連絡書"]
+        num_items = len(order_df)
+        # 連絡書シートの A5 〜 A18 の「□」を制御
+        for i in range(14):  # 最大14行分
+            row_idx = 5 + i
+            if i >= num_items:
+                # 発注数を超えた行の箇条書きマークを消去
+                ws_renraku.cell(row=row_idx, column=1).value = None
+                
     sheets_to_keep = ["発注書", "連絡書"]
     for sheet in list(wb.sheetnames):
         if sheet not in sheets_to_keep:
