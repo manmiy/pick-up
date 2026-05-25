@@ -50,22 +50,14 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     temp_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
     wb_temp = openpyxl.load_workbook(abs_excel)
     
-    # 🛠【変更】2枚目の白紙化を防ぐため、「連絡書」以外の非表示と、不要領域の「完全削除」を行う
+    # 連絡書だけを残して、他のシートを「完全に削除」する（これでNoneTypeエラーを防ぎます）
     for sheet in list(wb_temp.sheetnames):
         if sheet != "連絡書":
-            wb_temp[sheet].sheet_state = 'hidden'
+            wb_temp.remove(wb_temp[sheet])
             
     if "連絡書" in wb_temp.sheetnames:
         ws_renraku = wb_temp["連絡書"]
-        
-        # A1:H20の範囲外にあるハミ出しデータを物理的に削除（最大200行/50列まで掃除）
-        # これにより2枚目に印刷がはみ出る原因（ゴミデータや罫線）を根本から消去します
-        if ws_renraku.max_row > 20:
-            ws_renraku.delete_rows(21, ws_renraku.max_row - 20)
-        if ws_renraku.max_column > 8:
-            ws_renraku.delete_cols(9, ws_renraku.max_column - 8)
-            
-        # 印刷設定の強制適用
+        # 印刷範囲をA1からH20（1ページに収まる範囲）に厳格固定
         ws_renraku.print_area = 'A1:H20'
         ws_renraku.page_setup.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
@@ -95,6 +87,34 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 wb.Close(False)
             if excel is not None:
                 excel.Quit()
+            if os.path.exists(temp_excel):
+                try:
+                    os.remove(temp_excel)
+                except:
+                    pass
+                
+    # OSがLinuxなどの場合（Streamlit Cloud実行）
+    else:
+        try:
+            # --landscape などを付けず、1ページに収めるコマンドを実行
+            subprocess.run([
+                "libreoffice", "--headless", "--convert-to", "pdf", 
+                temp_excel, "--outdir", os.path.dirname(abs_pdf)
+            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            base_name = os.path.splitext(os.path.basename(temp_excel))[0]
+            lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
+            
+            if lo_pdf_path != abs_pdf:
+                if os.path.exists(abs_pdf):
+                    os.remove(abs_pdf)
+                os.rename(lo_pdf_path, abs_pdf)
+                
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
+        except Exception as e:
+            raise Exception(f"PDF変換エラー: {e}")
+        finally:
             if os.path.exists(temp_excel):
                 try:
                     os.remove(temp_excel)
@@ -177,20 +197,18 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
         else:
             safe_set(idx, 14, "")
             
-        # 🛠【変更】元の「納品場所」は加工せずそのまま戻します
         safe_set(idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(idx, 16, clean_val(getattr(row, "納品備考", None)))
         
-    # 🛠【変更】連絡書シートの上部（大槻 様 の位置）に苗字を書き込む
+    # 連絡書シートの制御
     if "連絡書" in wb.sheetnames:
         ws_renraku = wb["連絡書"]
         
-        # 💡【重要：要確認】
-        # 画像を見ると上部の「渡辺製作所 大槻 様」の部分を上書きしたい。
-        # ここでは仮に「D2セル」または「E2セル」付近と想定して上書き処理を行います。
-        # もしセル位置がズレている場合は、以下の `row=2, column=5` (E2) を実際のExcelに合わせて変更してください。
+        # 📍【ここがセル位置の指定場所です！】
+        # 1枚目の画像で「渡辺製作所 大槻 様」となっていた位置（セルの行と列）を指定します。
+        # 例：2行目のE列（5番目の列）を書き換える場合 → row=2, column=5
+        # もし実際のExcelで大槻様が「C2」にあるなら row=2, column=3 に変更してください。
         if staff_name.strip():
-            # 入力がある場合、指定セルを「〇〇 様」に書き換える
             ws_renraku.cell(row=2, column=5).value = f"{staff_name.strip()} 様"
             
         num_items = len(order_df)
@@ -216,7 +234,6 @@ def generate_order_excel(order_df, selected_contractor, staff_name="", filename=
     wb.save(output_filename)
     wb.close()
     return output_filename
-
 # --- 1. Excelデータの読み込みとクレンジング ---
 @st.cache_data
 def load_data(file_source="拾い出し表.xlsx"):
