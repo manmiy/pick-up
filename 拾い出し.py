@@ -40,14 +40,41 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- 🎯 安全なPDF変換ロジック ---
+# --- 🎯 PDF変換ロジック（シートを消さずに隠す安全仕様） ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
     
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
     
-    # OSがWindowsの場合
+    # PDF専用の一時ファイルを作成
+    temp_pdf_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
+    wb_temp = openpyxl.load_workbook(abs_excel)
+    
+    # 「連絡書」シートを特定
+    target_sheet_name = None
+    for sheet_name in wb_temp.sheetnames:
+        if "連絡書" in sheet_name.strip():
+            target_sheet_name = sheet_name
+            break
+    if target_sheet_name is None and len(wb_temp.sheetnames) > 0:
+        target_sheet_name = wb_temp.sheetnames[0]
+        
+    # 🎯【重要】シートを削除せず「非表示」にするだけ。これで関数は壊れません。
+    for sheet in list(wb_temp.sheetnames):
+        if sheet != target_sheet_name:
+            wb_temp[sheet].sheet_state = 'hidden'
+            
+    # 2枚目の白紙が出ないよう印刷範囲を再度固定
+    ws_renraku = wb_temp[target_sheet_name]
+    ws_renraku.print_area = 'A1:H20'
+    ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
+    ws_renraku.page_setup.fitToWidth = 1
+    ws_renraku.page_setup.fitToHeight = 1
+    
+    wb_temp.save(temp_pdf_excel)
+    wb_temp.close()
+    
     if platform.system() == "Windows":
         try:
             import win32com.client
@@ -59,38 +86,35 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
             excel = win32com.client.DispatchEx("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
-            wb = excel.Workbooks.Open(abs_excel)
-            for sheet in wb.Sheets:
-                if "連絡書" in sheet.Name:
-                    sheet.Select()
-                    break
-            wb.ActiveSheet.ExportAsFixedFormat(0, abs_pdf)
+            wb = excel.Workbooks.Open(temp_pdf_excel)
+            wb.ExportAsFixedFormat(0, abs_pdf)
         finally:
             if wb is not None: wb.Close(False)
             if excel is not None: excel.Quit()
-    
-    # OSがLinuxなどの場合（Streamlit Cloud環境）
+            if os.path.exists(temp_pdf_excel): os.remove(temp_pdf_excel)
     else:
-        # LibreOfficeにExcelをそのまま渡してPDF化
         try:
             subprocess.run([
                 "libreoffice", "--headless", "--convert-to", "pdf", 
-                abs_excel, "--outdir", os.path.dirname(abs_pdf)
+                temp_pdf_excel, "--outdir", os.path.dirname(abs_pdf)
             ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            base_name = os.path.splitext(os.path.basename(abs_excel))[0]
+            base_name = os.path.splitext(os.path.basename(temp_pdf_excel))[0]
             lo_pdf_path = os.path.join(os.path.dirname(abs_pdf), f"{base_name}.pdf")
             
             if lo_pdf_path != abs_pdf:
-                if os.path.exists(abs_pdf):
-                    os.remove(abs_pdf)
+                if os.path.exists(abs_pdf): os.remove(abs_pdf)
                 os.rename(lo_pdf_path, abs_pdf)
         except subprocess.CalledProcessError as e:
-            raise Exception(f"LibreOfficeでのPDF変換に失敗しました: {e.stderr.decode('utf-8', errors='ignore')}")
+            raise Exception(f"LibreOfficeでのPDF変換に失敗: {e.stderr.decode('utf-8', errors='ignore')}")
         except Exception as e:
             raise Exception(f"PDF変換エラー: {e}")
+        finally:
+            if os.path.exists(temp_pdf_excel):
+                try: os.remove(temp_pdf_excel)
+                except: pass
 
-# --- 🎯 関数に頼らず「直接セルへデータを書き込む」新ロジック ---
+# --- Excel出力ロジック ---
 def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     
@@ -105,11 +129,10 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
             cell.value = value
             
     def clean_val(val):
-        if pd.isna(val) or val == "NaN":
-            return ""
+        if pd.isna(val) or val == "NaN": return ""
         return val
 
-    # 1. 【発注書】シートへのデータ書き込み
+    # 1. 【発注書】シートへのデータ流し込み（ここは今まで通り安全に実行）
     max_row = ws.max_row
     if max_row >= 2:
         for r in range(2, max_row + 1):
@@ -127,7 +150,6 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         safe_set(ws, idx, 8, getattr(row, "規格", None))
         safe_set(ws, idx, 9, getattr(row, "規格_1", None))
         safe_set(ws, idx, 10, getattr(row, "規格_2", None))
-        
         safe_set(ws, idx, 11, clean_val(getattr(row, "階", None)))
         safe_set(ws, idx, 12, clean_val(getattr(row, "発注", None)))
         safe_set(ws, idx, 13, clean_val(getattr(row, "単位", None)))
@@ -137,15 +159,14 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
             if isinstance(ndate, datetime):
                 safe_set(ws, idx, 14, ndate.strftime("%Y/%m/%d"))
             else:
-                val_str = str(ndate).split(" ")[0]
-                safe_set(ws, idx, 14, val_str)
+                safe_set(ws, idx, 14, str(ndate).split(" ")[0])
         else:
             safe_set(ws, idx, 14, "")
             
         safe_set(ws, idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(ws, idx, 16, clean_val(getattr(row, "納品備考", None)))
         
-    # 2. 【連絡書】シートへの直接書き込み（関数エラーの防止）
+    # 2. 【連絡書】シートの更新（破壊的ロジックを排除）
     target_sheet_name = None
     for sheet_name in wb.sheetnames:
         if "連絡書" in sheet_name.strip():
@@ -158,35 +179,13 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
-        # 🎯 件名・宛先を直接上書き
+        # 🎯 宛先・件名だけをピンポイントで上書き。明細行はいじらないのでレイアウト崩れなし。
         if staff_name.strip():
-            ws_renraku.cell(row=2, column=3).value = staff_name.strip() # C2セル（担当者名）
+            ws_renraku.cell(row=2, column=3).value = staff_name.strip()
             
         if project_title.strip():
-            # 💡 件名が入るセル（「白石送電事務所...」の場所）を指定。
-            # 画像の配置からB4セルまたはC4セルと推測しています。ズレる場合は row=4, column=3 などに変更してください。
+            # 件名を入れるセル。位置がズレている場合は row=3, column=2 などに変更してください。
             ws_renraku.cell(row=4, column=2).value = project_title.strip() 
-
-        # 🎯 明細行（5行目〜18行目）に発注データを直接流し込む
-        num_items = len(order_df)
-        for i in range(14):
-            row_idx = 5 + i
-            if i < num_items:
-                item = order_df.iloc[i]
-                # B列(名称), C列(規格/数量), F列(数量) などへ直接文字を入れます
-                # テンプレートの列配置に合わせて適宜調整してください
-                ws_renraku.cell(row=row_idx, column=2).value = clean_val(item.get("名称", ""))
-                ws_renraku.cell(row=row_idx, column=3).value = clean_val(item.get("規格", ""))
-                
-                place_str = f"{clean_val(item.get('階', ''))} {clean_val(item.get('納品場所', ''))}".strip()
-                ws_renraku.cell(row=row_idx, column=4).value = place_str
-                ws_renraku.cell(row=row_idx, column=5).value = clean_val(item.get("納品備考", ""))
-                ws_renraku.cell(row=row_idx, column=6).value = clean_val(item.get("発注", ""))
-                ws_renraku.cell(row=row_idx, column=7).value = clean_val(item.get("単位", ""))
-            else:
-                # データがない行の数式や不要な文字をクリアする
-                for col_idx in range(2, 8):
-                    ws_renraku.cell(row=row_idx, column=col_idx).value = None
         
         # 印刷設定の固定
         ws_renraku.print_area = 'A1:H20'
@@ -194,10 +193,7 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         ws_renraku.page_setup.fitToWidth = 1
         ws_renraku.page_setup.fitToHeight = 1
                 
-    # PDFの一覧性を保つため、完成した直後に「発注書」を消し、「連絡書」だけがPDF化されるようにする
-    if "発注書" in wb.sheetnames and len(wb.sheetnames) > 1:
-        wb.remove(wb["発注書"])
-            
+    # PDF出力のために「発注書」は消さない。そのまま保存します。
     output_filename = f"連絡書_{selected_contractor}.xlsx"
     wb.save(output_filename)
     wb.close()
@@ -295,7 +291,6 @@ if not st.session_state.raw_df.empty:
 
     st.subheader("2. 発注先および宛先情報を指定してください")
     
-    # 🎯 UIに「件名」を追加
     meta_col1, meta_col2 = st.columns(2)
     with meta_col1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
