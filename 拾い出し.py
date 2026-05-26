@@ -40,18 +40,15 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- 🎯 PDF変換ロジック（シートを消さずに隠す安全仕様） ---
+# --- 🎯 40ページ問題を完全に防ぐPDF変換ロジック ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
     
     os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
-    
-    # PDF専用の一時ファイルを作成
     temp_pdf_excel = abs_excel.replace(".xlsx", "_temp_pdf.xlsx")
     wb_temp = openpyxl.load_workbook(abs_excel)
     
-    # 「連絡書」シートを特定
     target_sheet_name = None
     for sheet_name in wb_temp.sheetnames:
         if "連絡書" in sheet_name.strip():
@@ -60,18 +57,20 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     if target_sheet_name is None and len(wb_temp.sheetnames) > 0:
         target_sheet_name = wb_temp.sheetnames[0]
         
-    # 🎯【重要】シートを削除せず「非表示」にするだけ。これで関数は壊れません。
+    # 💡【修正】連絡書以外のシートを「超非表示（veryHidden）」にし、印刷範囲を消去します。
+    # これによりLibreOfficeが他のシートを読み込まず、確実に1ページだけ出力されます。
     for sheet in list(wb_temp.sheetnames):
         if sheet != target_sheet_name:
-            wb_temp[sheet].sheet_state = 'hidden'
+            wb_temp[sheet].sheet_state = 'veryHidden'
+            wb_temp[sheet].print_area = None
             
-    # 2枚目の白紙が出ないよう印刷範囲を再度固定
     ws_renraku = wb_temp[target_sheet_name]
     ws_renraku.print_area = 'A1:H20'
     ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
     ws_renraku.page_setup.fitToWidth = 1
     ws_renraku.page_setup.fitToHeight = 1
     
+    wb_temp.active = wb_temp.sheetnames.index(target_sheet_name)
     wb_temp.save(temp_pdf_excel)
     wb_temp.close()
     
@@ -132,12 +131,10 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         if pd.isna(val) or val == "NaN": return ""
         return val
 
-    # 1. 【発注書】シートへのデータ流し込み（ここは今まで通り安全に実行）
-    max_row = ws.max_row
-    if max_row >= 2:
-        for r in range(2, max_row + 1):
-            for c in range(1, 17):
-                safe_set(ws, r, c, None)
+    # 💡【修正】2000行目まで消去するのをやめ、最初の50行だけ綺麗にすることで40ページへの膨張を防ぎます
+    for r in range(2, 50):
+        for c in range(1, 17):
+            safe_set(ws, r, c, None)
                 
     today_str = datetime.now().strftime("%Y/%m/%d")
     
@@ -166,7 +163,6 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         safe_set(ws, idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(ws, idx, 16, clean_val(getattr(row, "納品備考", None)))
         
-    # 2. 【連絡書】シートの更新（破壊的ロジックを排除）
     target_sheet_name = None
     for sheet_name in wb.sheetnames:
         if "連絡書" in sheet_name.strip():
@@ -179,21 +175,27 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
-        # 🎯 宛先・件名だけをピンポイントで上書き。明細行はいじらないのでレイアウト崩れなし。
+        # 🎯 宛先担当者 (C2セル)
         if staff_name.strip():
             ws_renraku.cell(row=2, column=3).value = staff_name.strip()
             
+        # 🎯【修正】件名を正しい位置 (B3セル = 行3, 列2) に書き込みます
         if project_title.strip():
-            # 件名を入れるセル。位置がズレている場合は row=3, column=2 などに変更してください。
-            ws_renraku.cell(row=4, column=2).value = project_title.strip() 
+            ws_renraku.cell(row=3, column=2).value = project_title.strip() 
         
-        # 印刷設定の固定
+        # 🎯【修正】発注数に合わせて、空欄行の「□（チェックボックス）」を確実に消去します
+        num_items = len(order_df)
+        for i in range(15):  # 連絡書の枠（最大15行分）をチェック
+            row_idx = 4 + i  # アイテムは4行目からスタート
+            if i >= num_items:
+                # 発注数を超えた行の A列（1列目）のチェックボックスを空にする
+                ws_renraku.cell(row=row_idx, column=1).value = None
+        
         ws_renraku.print_area = 'A1:H20'
         ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
         ws_renraku.page_setup.fitToHeight = 1
                 
-    # PDF出力のために「発注書」は消さない。そのまま保存します。
     output_filename = f"連絡書_{selected_contractor}.xlsx"
     wb.save(output_filename)
     wb.close()
