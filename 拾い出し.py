@@ -126,6 +126,7 @@ def copy_cell_style(src_cell, dest_cell):
         dest_cell.alignment = copy(src_cell.alignment)
 
 # --- Excel出力ロジック（自動拡張・ページ数自動カウント版） ---
+# --- Excel出力ロジック（自動拡張・ページ数自動カウント・結合セル完全対応版） ---
 def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     
@@ -135,6 +136,7 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         ws = wb.create_sheet("発注書")
         
     def safe_set(sheet_obj, row, col, value):
+        """結合セルの裏側に書き込んでクラッシュするのを防ぐ保護関数"""
         cell = sheet_obj.cell(row=row, column=col)
         if not isinstance(cell, openpyxl.cell.cell.MergedCell):
             cell.value = value
@@ -143,10 +145,12 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         if pd.isna(val) or val == "NaN": return ""
         return val
 
+    # 発注書シートの初期化
     for r in range(2, 500): 
         for c in range(1, 17):
             safe_set(ws, r, c, None)
                 
+    # 発注書シートへの書き込み
     for idx, row in enumerate(order_df.itertuples(), start=2):
         safe_set(ws, idx, 1, getattr(row, "材料コード", None))
         safe_set(ws, idx, 2, order_date)
@@ -187,6 +191,7 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         total_pages = max(1, math.ceil(num_items / 14))
         existing_merged_ranges = list(ws_renraku.merged_cells.ranges)
         
+        # 2ページ目以降のフォーマット複製
         for p in range(1, total_pages):
             row_offset = p * 20
             
@@ -197,9 +202,13 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
                 for col in range(1, 9): 
                     src_cell = ws_renraku.cell(row=src_row, column=col)
                     dest_cell = ws_renraku.cell(row=dest_row, column=col)
-                    dest_cell.value = src_cell.value
+                    
+                    # 結合セルの場合は値を直接コピーしない
+                    if not isinstance(src_cell, openpyxl.cell.cell.MergedCell):
+                        dest_cell.value = src_cell.value
                     copy_cell_style(src_cell, dest_cell)
             
+            # 結合状態の複製
             for merged_range in existing_merged_ranges:
                 if merged_range.bounds[1] <= 20: 
                     min_col, min_row, max_col, max_row = merged_range.bounds
@@ -208,26 +217,28 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
                         end_row=max_row + row_offset, end_column=max_col
                     )
         
+        # 連絡書シートへのデータ書き込み（全て safe_set を経由させる）
         for p in range(total_pages):
             row_offset = p * 20
             
             if order_date.strip():
-                ws_renraku.cell(row=1 + row_offset, column=4).value = order_date.strip()
+                safe_set(ws_renraku, 1 + row_offset, 4, order_date.strip())
                 
-            ws_renraku.cell(row=1 + row_offset, column=6).value = f"{p + 1} / {total_pages}"
-            ws_renraku.cell(row=1 + row_offset, column=7).value = None
-            ws_renraku.cell(row=1 + row_offset, column=8).value = None
+            safe_set(ws_renraku, 1 + row_offset, 6, f"{p + 1} / {total_pages}")
+            safe_set(ws_renraku, 1 + row_offset, 7, None)
+            safe_set(ws_renraku, 1 + row_offset, 8, None)
                 
             if staff_name.strip():
-                ws_renraku.cell(row=2 + row_offset, column=3).value = staff_name.strip()
+                safe_set(ws_renraku, 2 + row_offset, 3, staff_name.strip())
                 
             if project_title.strip():
                 title_cell = ws_renraku.cell(row=3 + row_offset, column=2)
-                title_cell.value = project_title.strip()
-                title_cell.alignment = Alignment(shrinkToFit=True, vertical='center', horizontal='left')
-                ws_renraku.cell(row=3 + row_offset, column=3).value = None
-                ws_renraku.cell(row=3 + row_offset, column=4).value = None
-                ws_renraku.cell(row=3 + row_offset, column=5).value = None
+                if not isinstance(title_cell, openpyxl.cell.cell.MergedCell):
+                    title_cell.value = project_title.strip()
+                    title_cell.alignment = Alignment(shrinkToFit=True, vertical='center', horizontal='left')
+                safe_set(ws_renraku, 3 + row_offset, 3, None)
+                safe_set(ws_renraku, 3 + row_offset, 4, None)
+                safe_set(ws_renraku, 3 + row_offset, 5, None)
 
             for i in range(14):
                 item_idx = p * 14 + i
@@ -235,21 +246,16 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
                 
                 if item_idx < num_items:
                     item = order_df.iloc[item_idx]
-                    ws_renraku.cell(row=target_row, column=1).value = "□"
-                    ws_renraku.cell(row=target_row, column=2).value = clean_val(item.get("名称", ""))
-                    ws_renraku.cell(row=target_row, column=3).value = clean_val(item.get("規格", ""))
-                    ws_renraku.cell(row=target_row, column=4).value = clean_val(item.get("規格_1", ""))
-                    ws_renraku.cell(row=target_row, column=5).value = clean_val(item.get("規格_2", ""))
-                    ws_renraku.cell(row=target_row, column=6).value = clean_val(item.get("発注", ""))
-                    ws_renraku.cell(row=target_row, column=7).value = clean_val(item.get("単位", ""))
+                    safe_set(ws_renraku, target_row, 1, "□")
+                    safe_set(ws_renraku, target_row, 2, clean_val(item.get("名称", "")))
+                    safe_set(ws_renraku, target_row, 3, clean_val(item.get("規格", "")))
+                    safe_set(ws_renraku, target_row, 4, clean_val(item.get("規格_1", "")))
+                    safe_set(ws_renraku, target_row, 5, clean_val(item.get("規格_2", "")))
+                    safe_set(ws_renraku, target_row, 6, clean_val(item.get("発注", "")))
+                    safe_set(ws_renraku, target_row, 7, clean_val(item.get("単位", "")))
                 else:
-                    ws_renraku.cell(row=target_row, column=1).value = None
-                    ws_renraku.cell(row=target_row, column=2).value = None
-                    ws_renraku.cell(row=target_row, column=3).value = None
-                    ws_renraku.cell(row=target_row, column=4).value = None
-                    ws_renraku.cell(row=target_row, column=5).value = None
-                    ws_renraku.cell(row=target_row, column=6).value = None
-                    ws_renraku.cell(row=target_row, column=7).value = None
+                    for col_idx in range(1, 8):
+                        safe_set(ws_renraku, target_row, col_idx, None)
         
         max_print_row = 20 * total_pages
         ws_renraku.print_area = f'A1:H{max_print_row}'
