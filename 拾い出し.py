@@ -107,14 +107,33 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 except: pass
 
 # --- Excel出力ロジック ---
-def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", page_num="1", total_pages="1", filename="拾い出し表.xlsx"):
+def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", total_pages="1", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
+    ws_base = wb["連絡書"] # 元の1ページ目のテンプレート
     
-    if "発注書" in wb.sheetnames:
-        ws = wb["発注書"]
-    else:
-        ws = wb.create_sheet("発注書")
+    # 2ページ以上の場合は、ここでシートを拡張する処理を入れる
+    # 新しいシートを作成してそこに枠をコピペしていく手法をとります
+    ws_new = wb.create_sheet("印刷用")
+    
+    for p in range(int(total_pages)):
+        start_row = 1 + (p * 20)
+        # 1行目〜20行目をコピー
+        for row in range(1, 21):
+            for col in range(1, 9):
+                src_cell = ws_base.cell(row=row, column=col)
+                dest_cell = ws_new.cell(row=start_row + row - 1, column=col)
+                dest_cell.value = src_cell.value
+                dest_cell.font = copy_font(src_cell.font) # スタイルもコピー
+                dest_cell.alignment = copy_alignment(src_cell.alignment)
         
+        # ページ番号の自動入力 (例: F1, F21...)
+        ws_new.cell(row=start_row, column=6).value = f"{p+1} / {total_pages}"
+        
+        # データを流し込む処理をここに追加
+        # (p * 14)行目以降のデータを p番目のブロックに書き込む...
+    
+    # 印刷設定をして保存
+    wb.save("出力用.xlsx")
     def safe_set(sheet_obj, row, col, value):
         cell = sheet_obj.cell(row=row, column=col)
         if not isinstance(cell, openpyxl.cell.cell.MergedCell):
