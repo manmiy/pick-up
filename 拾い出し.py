@@ -241,19 +241,16 @@ else:
         display_columns = ['発注対象', '材料コード', '名称', '規格', '発注', '単位', '発注先']
         current_editor_key = f"material_editor_{search_query}"
 
-        st.data_editor(
-            st.session_state.display_df,
-            column_order=display_columns,
-            hide_index=True,
-            use_container_width=True,
-            disabled=["材料コード", "名称", "規格", "発注", "単位", "発注先"],
-            key=current_editor_key,
-            on_change=handle_editor_change,
-            kwargs={"editor_key": current_editor_key},
-            on_select="rerun",
-            selection_mode="single"
-        )
-        
+st.data_editor(
+    st.session_state.display_df,
+    column_order=display_columns,
+    hide_index=True,
+    use_container_width=True,
+    disabled=["材料コード", "名称", "規格", "発注", "単位", "発注先"],
+    key=current_editor_key,
+    on_change=handle_editor_change,
+    kwargs={"editor_key": current_editor_key}
+)
         # 🎯 広告シートの自動プレビュー機能
         editor_state = st.session_state.get(current_editor_key, {})
         selection = editor_state.get("selection", {})
