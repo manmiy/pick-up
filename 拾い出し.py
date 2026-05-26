@@ -254,9 +254,9 @@ st.data_editor(
             selection_mode="single"
         )
         # 🎯 広告シートの自動プレビュー機能
-        editor_state = st.session_state.get(current_editor_key, {})
-        selection = editor_state.get("selection", {})
-        selected_rows_indices = selection.get("rows", [])
+editor_state = st.session_state.get(current_editor_key, {})
+selection = editor_state.get("selection", {})
+selected_rows_indices = selection.get("rows", [])
         
         if selected_rows_indices:
             selected_idx = selected_rows_indices[0]
