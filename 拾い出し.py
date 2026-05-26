@@ -260,9 +260,32 @@ if not st.session_state.raw_df.empty:
         st.markdown("---")
         st.subheader(f"📖 『{clicked_material_name}』の参考資料")
         
-        try:
-            all_sheets = pd.ExcelFile("拾い出し表.xlsx").sheet_names
-            exclude = ["拾い出し", "発注書", "連絡書", "並べ替えビュー"]
+try:
+            # ▼ 安全装置を追加（ファイルが存在するかチェックする）
+            if not os.path.exists("拾い出し表.xlsx"):
+                st.warning("⚠️ 参考資料を表示するには、左側のメニューからエクセルデータを再度アップロードしてください。")
+            else:
+                all_sheets = pd.ExcelFile("拾い出し表.xlsx").sheet_names
+                exclude = ["拾い出し", "発注書", "連絡書", "並べ替えビュー"]
+                ad_sheets = [s for s in all_sheets if not any(x in s for x in exclude)]
+                
+                target_ad_sheet = None
+                if "シーリング" in clicked_material_name or "シール" in clicked_vendor:
+                    matches = [s for s in ad_sheets if "シーリング" in s or "シール" in s]
+                    if matches: target_ad_sheet = matches[0]
+                elif "外壁" in clicked_material_name or "サイディング" in clicked_material_name or "サイディング" in clicked_vendor:
+                    matches = [s for s in ad_sheets if "外壁" in s or "手間" in s or "サイディング" in s]
+                    if matches: target_ad_sheet = matches[0]
+                    
+                if target_ad_sheet:
+                    ad_df = pd.read_excel("拾い出し表.xlsx", sheet_name=target_ad_sheet).fillna("")
+                    st.info(f"💡 マスターデータ内の「{target_ad_sheet}」シートを自動表示しています。")
+                    st.dataframe(ad_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("この材料に対応する個別の広告・参考シートは見つかりませんでした。")
+                
+        except Exception as e:
+            st.error(f"参考資料の読み込み中にエラーが発生しました: {e}")
             ad_sheets = [s for s in all_sheets if not any(x in s for x in exclude)]
             
             target_ad_sheet = None
