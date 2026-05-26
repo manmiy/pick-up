@@ -122,7 +122,6 @@ def copy_cell_style(src_cell, dest_cell):
 def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     
-    # 1. 発注書シートのデータ更新
     if "発注書" in wb.sheetnames:
         ws = wb["発注書"]
     else:
@@ -166,7 +165,6 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         safe_set(ws, idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(ws, idx, 16, clean_val(getattr(row, "納品備考", None)))
         
-    # 2. 連絡書シートの自動拡張処理
     target_sheet_name = None
     for sheet_name in wb.sheetnames:
         if "連絡書" in sheet_name.strip():
@@ -178,56 +176,44 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
-        # 必要ページ数の自動計算（1ページあたり14品目）
         num_items = len(order_df)
         total_pages = max(1, math.ceil(num_items / 14))
-        
-        # 既存の結合セル情報を一時保持（複製時のズレを防ぐ）
         existing_merged_ranges = list(ws_renraku.merged_cells.ranges)
         
-        # 2ページ目以降が必要な場合、1〜20行目のレイアウトを動的にコピペして拡張
         for p in range(1, total_pages):
             row_offset = p * 20
             
-            # 行の高さとセルのスタイル・値を複製
             for src_row in range(1, 21):
                 dest_row = src_row + row_offset
                 ws_renraku.row_dimensions[dest_row].height = ws_renraku.row_dimensions[src_row].height
                 
-                for col in range(1, 9):  # A列〜H列
+                for col in range(1, 9): 
                     src_cell = ws_renraku.cell(row=src_row, column=col)
                     dest_cell = ws_renraku.cell(row=dest_row, column=col)
-                    
                     dest_cell.value = src_cell.value
                     copy_cell_style(src_cell, dest_cell)
             
-            # 結合セルの複製適用
             for merged_range in existing_merged_ranges:
-                if merged_range.bounds[1] <= 20:  # 1〜20行目の結合範囲が対象
+                if merged_range.bounds[1] <= 20: 
                     min_col, min_row, max_col, max_row = merged_range.bounds
                     ws_renraku.merge_cells(
                         start_row=min_row + row_offset, start_column=min_col,
                         end_row=max_row + row_offset, end_column=max_col
                     )
         
-        # 各ページへのデータ流し込みとヘッダー・フッター情報の書き込み
         for p in range(total_pages):
             row_offset = p * 20
             
-            # 🎯 日付の反映
             if order_date.strip():
                 ws_renraku.cell(row=1 + row_offset, column=4).value = order_date.strip()
                 
-            # 🎯 ページ番号の自動入力 (F列のセルに "1 / 2" のように書き込む)
             ws_renraku.cell(row=1 + row_offset, column=6).value = f"{p + 1} / {total_pages}"
             ws_renraku.cell(row=1 + row_offset, column=7).value = None
             ws_renraku.cell(row=1 + row_offset, column=8).value = None
                 
-            # 宛先担当者
             if staff_name.strip():
                 ws_renraku.cell(row=2 + row_offset, column=3).value = staff_name.strip()
                 
-            # 🎯 件名の反映（長すぎる場合は自動縮小）
             if project_title.strip():
                 title_cell = ws_renraku.cell(row=3 + row_offset, column=2)
                 title_cell.value = project_title.strip()
@@ -236,15 +222,12 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
                 ws_renraku.cell(row=3 + row_offset, column=4).value = None
                 ws_renraku.cell(row=3 + row_offset, column=5).value = None
 
-            # 品目データの書き込み（各ページ最大14行）
             for i in range(14):
                 item_idx = p * 14 + i
                 target_row = 5 + i + row_offset
                 
                 if item_idx < num_items:
-                    # データがある場合、関数を上書きして明示的に値を流し込む
                     item = order_df.iloc[item_idx]
-                    
                     ws_renraku.cell(row=target_row, column=1).value = "□"
                     ws_renraku.cell(row=target_row, column=2).value = clean_val(item.get("名称", ""))
                     ws_renraku.cell(row=target_row, column=3).value = clean_val(item.get("規格", ""))
@@ -253,7 +236,6 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
                     ws_renraku.cell(row=target_row, column=6).value = clean_val(item.get("発注", ""))
                     ws_renraku.cell(row=target_row, column=7).value = clean_val(item.get("単位", ""))
                 else:
-                    # 余った行の枠線の内側を綺麗に掃除（チェックボックス等の消去）
                     ws_renraku.cell(row=target_row, column=1).value = None
                     ws_renraku.cell(row=target_row, column=2).value = None
                     ws_renraku.cell(row=target_row, column=3).value = None
@@ -262,7 +244,6 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
                     ws_renraku.cell(row=target_row, column=6).value = None
                     ws_renraku.cell(row=target_row, column=7).value = None
         
-        # 🎯 印刷範囲の動的変更
         max_print_row = 20 * total_pages
         ws_renraku.print_area = f'A1:H{max_print_row}'
         ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
@@ -306,6 +287,10 @@ def load_data(file_source="拾い出し表.xlsx"):
     df.insert(0, '発注対象', False) 
     return df
 
+# =========================================================
+# アプリケーション実行部
+# =========================================================
+
 if uploaded_file is not None:
     if "last_uploaded_file_id" not in st.session_state or st.session_state.last_uploaded_file_id != uploaded_file.file_id:
         try:
@@ -337,6 +322,7 @@ if not st.session_state.raw_df.empty:
                 st.session_state.raw_df.at[real_idx, "発注対象"] = edits["発注対象"]
 
     st.subheader("1. 発注する材料にチェックを入れてください")
+    st.caption("💡 行（材料名や左端の余白）をクリックすると、対応する広告・参考資料シートが下部に自動プレビューされます。")
     search_query = st.text_input("🔍 絞り込み検索", "")
 
     if search_query:
@@ -353,6 +339,7 @@ if not st.session_state.raw_df.empty:
     display_columns = ['発注対象', '材料コード', '名称', '規格', '発注', '単位', '発注先']
     current_editor_key = f"material_editor_{search_query}"
 
+    # 🎯 行選択イベントを有効化 (on_select="rerun")
     st.data_editor(
         st.session_state.display_df,
         column_order=display_columns,
@@ -361,12 +348,58 @@ if not st.session_state.raw_df.empty:
         disabled=["材料コード", "名称", "規格", "発注", "単位", "発注先"],
         key=current_editor_key,
         on_change=handle_editor_change,
-        kwargs={"editor_key": current_editor_key}
+        kwargs={"editor_key": current_editor_key},
+        on_select="rerun",
+        selection_mode="single"
     )
+    
+    # =========================================================
+    # 🎯 選択された材料に応じた「広告シート」の自動プレビュー表示
+    # =========================================================
+    editor_state = st.session_state.get(current_editor_key, {})
+    selection = editor_state.get("selection", {})
+    selected_rows_indices = selection.get("rows", [])
+    
+    if selected_rows_indices:
+        selected_idx = selected_rows_indices[0]
+        clicked_material_name = str(st.session_state.display_df.iloc[selected_idx]["名称"])
+        clicked_vendor = str(st.session_state.display_df.iloc[selected_idx]["発注先"])
+        
+        st.markdown("---")
+        st.subheader(f"📖 『{clicked_material_name}』の参考資料")
+        
+        try:
+            # 既存のシート一覧を取得
+            all_sheets = pd.ExcelFile("拾い出し表.xlsx").sheet_names
+            exclude = ["拾い出し", "発注書", "連絡書", "並べ替えビュー"]
+            ad_sheets = [s for s in all_sheets if not any(x in s for x in exclude)]
+            
+            target_ad_sheet = None
+            
+            # 名称や業者名から、該当するシートを推測
+            if "シーリング" in clicked_material_name or "シール" in clicked_vendor:
+                matches = [s for s in ad_sheets if "シーリング" in s or "シール" in s]
+                if matches: target_ad_sheet = matches[0]
+            elif "外壁" in clicked_material_name or "サイディング" in clicked_material_name or "サイディング" in clicked_vendor:
+                matches = [s for s in ad_sheets if "外壁" in s or "手間" in s or "サイディング" in s]
+                if matches: target_ad_sheet = matches[0]
+                
+            if target_ad_sheet:
+                # 広告シートをプレビュー表示
+                ad_df = pd.read_excel("拾い出し表.xlsx", sheet_name=target_ad_sheet).fillna("")
+                st.info(f"💡 マスターファイル内の「{target_ad_sheet}」シートを自動表示しています。")
+                st.dataframe(ad_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("この材料に対応する個別の広告・参考シートは見つかりませんでした。")
+                
+        except Exception as e:
+            st.error(f"参考資料の読み込み中にエラーが発生しました: {e}")
+            
+    st.markdown("---")
 
     st.subheader("2. 発注先および宛先情報を指定してください")
     
-    # UIの整理：手動のページ数入力用のコンポーネントを完全に排除
+    # ページ数のUIは廃止され、業者・担当・日付・件名のみに整理されました
     col_top1, col_top2, col_top3 = st.columns([4, 3, 3])
     with col_top1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
