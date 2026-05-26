@@ -40,7 +40,7 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
-# --- 🎯 40ページ問題を完全に防ぐPDF変換ロジック ---
+# --- PDF変換ロジック ---
 def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     abs_excel = os.path.abspath(excel_file_path)
     abs_pdf = os.path.abspath(pdf_file_path)
@@ -57,8 +57,7 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     if target_sheet_name is None and len(wb_temp.sheetnames) > 0:
         target_sheet_name = wb_temp.sheetnames[0]
         
-    # 💡【修正】連絡書以外のシートを「超非表示（veryHidden）」にし、印刷範囲を消去します。
-    # これによりLibreOfficeが他のシートを読み込まず、確実に1ページだけ出力されます。
+    # 連絡書以外のシートを「超非表示」にし、印刷範囲を消去
     for sheet in list(wb_temp.sheetnames):
         if sheet != target_sheet_name:
             wb_temp[sheet].sheet_state = 'veryHidden'
@@ -114,7 +113,7 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 except: pass
 
 # --- Excel出力ロジック ---
-def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", filename="拾い出し表.xlsx"):
+def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", order_no="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     
     if "発注書" in wb.sheetnames:
@@ -131,16 +130,14 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         if pd.isna(val) or val == "NaN": return ""
         return val
 
-    # 💡【修正】2000行目まで消去するのをやめ、最初の50行だけ綺麗にすることで40ページへの膨張を防ぎます
+    # 発注書シートの初期化
     for r in range(2, 50):
         for c in range(1, 17):
             safe_set(ws, r, c, None)
                 
-    today_str = datetime.now().strftime("%Y/%m/%d")
-    
     for idx, row in enumerate(order_df.itertuples(), start=2):
         safe_set(ws, idx, 1, getattr(row, "材料コード", None))
-        safe_set(ws, idx, 2, today_str)
+        safe_set(ws, idx, 2, order_date)  # 発注書の日付もUIの入力に合わせる
         safe_set(ws, idx, 5, getattr(row, "発注先", None))
         safe_set(ws, idx, 6, getattr(row, "担当者", None))
         safe_set(ws, idx, 7, getattr(row, "名称", None))
@@ -175,20 +172,29 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
-        # 🎯 宛先担当者 (C2セル)
+        # 🎯 日付とNo.の反映 (1行目のD列とF列)
+        if order_date.strip():
+            ws_renraku.cell(row=1, column=4).value = order_date.strip()
+        if order_no.strip():
+            ws_renraku.cell(row=1, column=6).value = order_no.strip()
+            
+        # 宛先担当者 (C2セル)
         if staff_name.strip():
             ws_renraku.cell(row=2, column=3).value = staff_name.strip()
             
-        # 🎯【修正】件名を正しい位置 (B3セル = 行3, 列2) に書き込みます
+        # 件名 (B3セル) と余計な文字の掃除
         if project_title.strip():
             ws_renraku.cell(row=3, column=2).value = project_title.strip() 
+            # 🎯 テンプレートに残っている「新築工事」などの文字を隣のセルから消去します
+            ws_renraku.cell(row=3, column=3).value = None
+            ws_renraku.cell(row=3, column=4).value = None
+            ws_renraku.cell(row=3, column=5).value = None
         
-        # 🎯【修正】発注数に合わせて、空欄行の「□（チェックボックス）」を確実に消去します
+        # 🎯 チェックボックスの消去（スタート位置を5行目に修正し、最後の1個まで完璧に合わせます）
         num_items = len(order_df)
-        for i in range(15):  # 連絡書の枠（最大15行分）をチェック
-            row_idx = 4 + i  # アイテムは4行目からスタート
+        for i in range(15):
+            row_idx = 5 + i  # 5行目からスタート
             if i >= num_items:
-                # 発注数を超えた行の A列（1列目）のチェックボックスを空にする
                 ws_renraku.cell(row=row_idx, column=1).value = None
         
         ws_renraku.print_area = 'A1:H20'
@@ -293,13 +299,20 @@ if not st.session_state.raw_df.empty:
 
     st.subheader("2. 発注先および宛先情報を指定してください")
     
-    meta_col1, meta_col2 = st.columns(2)
-    with meta_col1:
+    # 🎯 日付・No.を含めたUIレイアウトの調整
+    col_top1, col_top2, col_top3, col_top4 = st.columns([3, 3, 2, 2])
+    with col_top1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
         selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
-        project_title = st.text_input("件名（現場名など）", value="白石送電事務所 新築工事")
-    with meta_col2:
+    with col_top2:
         staff_name = st.text_input("宛先担当者名（苗字のみで可）", value="", placeholder="例: satou")
+    with col_top3:
+        today_str_ui = datetime.now().strftime("%Y/%m/%d")
+        order_date = st.text_input("日付", value=today_str_ui)
+    with col_top4:
+        order_no = st.text_input("No.", value="1")
+        
+    project_title = st.text_input("件名（現場名など）", value="白石送電事務所 新築工事")
 
     st.subheader("3. 発注書プレビュー")
     if selected_contractor != "--選択してください--":
@@ -315,7 +328,14 @@ if not st.session_state.raw_df.empty:
             col1, col2 = st.columns(2)
             with col1:
                 if st.button(f"① Excelを発行する", type="primary", use_container_width=True):
-                    output_file = generate_order_excel(order_df, selected_contractor, project_title=project_title, staff_name=staff_name)
+                    output_file = generate_order_excel(
+                        order_df, 
+                        selected_contractor, 
+                        project_title=project_title, 
+                        staff_name=staff_name,
+                        order_date=order_date,
+                        order_no=order_no
+                    )
                     st.session_state["generated_excel"] = output_file
                     st.toast("Excelを発行しました！", icon="🎉")
             
