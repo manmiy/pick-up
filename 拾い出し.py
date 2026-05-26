@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
+from openpyxl.styles import Alignment  # 🎯 文字の縮小表示のために追加
 import os
 import platform
 import subprocess
@@ -57,18 +58,11 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
     if target_sheet_name is None and len(wb_temp.sheetnames) > 0:
         target_sheet_name = wb_temp.sheetnames[0]
         
-    # 連絡書以外のシートを「超非表示」にし、印刷範囲を消去
     for sheet in list(wb_temp.sheetnames):
         if sheet != target_sheet_name:
             wb_temp[sheet].sheet_state = 'veryHidden'
             wb_temp[sheet].print_area = None
             
-    ws_renraku = wb_temp[target_sheet_name]
-    ws_renraku.print_area = 'A1:H20'
-    ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
-    ws_renraku.page_setup.fitToWidth = 1
-    ws_renraku.page_setup.fitToHeight = 1
-    
     wb_temp.active = wb_temp.sheetnames.index(target_sheet_name)
     wb_temp.save(temp_pdf_excel)
     wb_temp.close()
@@ -113,7 +107,7 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 except: pass
 
 # --- Excel出力ロジック ---
-def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", order_no="", filename="拾い出し表.xlsx"):
+def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", page_num="1", total_pages="1", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
     
     if "発注書" in wb.sheetnames:
@@ -130,14 +124,13 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         if pd.isna(val) or val == "NaN": return ""
         return val
 
-    # 発注書シートの初期化
-    for r in range(2, 50):
+    for r in range(2, 100):  # ページ増加を見越してクリア範囲を少し拡張
         for c in range(1, 17):
             safe_set(ws, r, c, None)
                 
     for idx, row in enumerate(order_df.itertuples(), start=2):
         safe_set(ws, idx, 1, getattr(row, "材料コード", None))
-        safe_set(ws, idx, 2, order_date)  # 発注書の日付もUIの入力に合わせる
+        safe_set(ws, idx, 2, order_date)
         safe_set(ws, idx, 5, getattr(row, "発注先", None))
         safe_set(ws, idx, 6, getattr(row, "担当者", None))
         safe_set(ws, idx, 7, getattr(row, "名称", None))
@@ -172,35 +165,51 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
-        # 🎯 日付とNo.の反映 (1行目のD列とF列)
+        # 🎯 日付の反映
         if order_date.strip():
             ws_renraku.cell(row=1, column=4).value = order_date.strip()
-        if order_no.strip():
-            ws_renraku.cell(row=1, column=6).value = order_no.strip()
             
-        # 宛先担当者 (C2セル)
+        # 🎯 ページ番号の合体と反映（例： "1 / 2" の形にしてF1セルに上書き）
+        ws_renraku.cell(row=1, column=6).value = f"{page_num.strip()} / {total_pages.strip()}"
+        # 既存テンプレートの「/」や「1」が残らないように隣のセルを掃除
+        ws_renraku.cell(row=1, column=7).value = None
+        ws_renraku.cell(row=1, column=8).value = None
+            
+        # 宛先担当者
         if staff_name.strip():
             ws_renraku.cell(row=2, column=3).value = staff_name.strip()
             
-        # 件名 (B3セル) と余計な文字の掃除
+        # 🎯 件名の反映（長すぎる場合は自動縮小して全体を表示させる）
         if project_title.strip():
-            ws_renraku.cell(row=3, column=2).value = project_title.strip() 
-            # 🎯 テンプレートに残っている「新築工事」などの文字を隣のセルから消去します
+            title_cell = ws_renraku.cell(row=3, column=2)
+            title_cell.value = project_title.strip()
+            title_cell.alignment = Alignment(shrinkToFit=True, vertical='center')
+            # 既存の「新築工事」などの文字が被らないように掃除
             ws_renraku.cell(row=3, column=3).value = None
             ws_renraku.cell(row=3, column=4).value = None
             ws_renraku.cell(row=3, column=5).value = None
         
-        # 🎯 チェックボックスの消去（スタート位置を5行目に修正し、最後の1個まで完璧に合わせます）
+        # 🎯 全ページ数から最大処理行を逆算し、チェックボックスを正確に消去する
+        try:
+            p_count = int(total_pages)
+        except:
+            p_count = 1
+            
         num_items = len(order_df)
-        for i in range(15):
-            row_idx = 5 + i  # 5行目からスタート
-            if i >= num_items:
-                ws_renraku.cell(row=row_idx, column=1).value = None
+        for p in range(p_count):
+            for i in range(14):
+                # 1ページ目は5行目〜、2ページ目は25行目〜 に対応
+                row_idx = 5 + i + (p * 20)
+                if (p * 14 + i) >= num_items:
+                    ws_renraku.cell(row=row_idx, column=1).value = None
         
-        ws_renraku.print_area = 'A1:H20'
+        # 🎯 ページ数に合わせて印刷範囲を「動的」に変更（1ページなら20行、2ページなら40行）
+        max_print_row = 20 * p_count
+        ws_renraku.print_area = f'A1:H{max_print_row}'
         ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
-        ws_renraku.page_setup.fitToHeight = 1
+        # 高さはページ数分だけ許容する
+        ws_renraku.page_setup.fitToHeight = p_count
                 
     output_filename = f"連絡書_{selected_contractor}.xlsx"
     wb.save(output_filename)
@@ -299,8 +308,8 @@ if not st.session_state.raw_df.empty:
 
     st.subheader("2. 発注先および宛先情報を指定してください")
     
-    # 🎯 日付・No.を含めたUIレイアウトの調整
-    col_top1, col_top2, col_top3, col_top4 = st.columns([3, 3, 2, 2])
+    # 🎯 レイアウトを5分割してページ数のUIを追加
+    col_top1, col_top2, col_top3, col_top4, col_top5 = st.columns([3, 2, 2, 1, 1])
     with col_top1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
         selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
@@ -310,7 +319,9 @@ if not st.session_state.raw_df.empty:
         today_str_ui = datetime.now().strftime("%Y/%m/%d")
         order_date = st.text_input("日付", value=today_str_ui)
     with col_top4:
-        order_no = st.text_input("No.", value="1")
+        page_num = st.text_input("現在のページ", value="1")
+    with col_top5:
+        total_pages = st.text_input("全ページ", value="1")
         
     project_title = st.text_input("件名（現場名など）", value="白石送電事務所 新築工事")
 
@@ -334,7 +345,8 @@ if not st.session_state.raw_df.empty:
                         project_title=project_title, 
                         staff_name=staff_name,
                         order_date=order_date,
-                        order_no=order_no
+                        page_num=page_num,
+                        total_pages=total_pages
                     )
                     st.session_state["generated_excel"] = output_file
                     st.toast("Excelを発行しました！", icon="🎉")
