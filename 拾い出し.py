@@ -1,11 +1,13 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from openpyxl.styles import Alignment  # 🎯 文字の縮小表示のために追加
+from openpyxl.styles import Alignment
 import os
 import platform
 import subprocess
+import math
 from datetime import datetime
+from copy import copy
 
 st.set_page_config(page_title="自動発注システム", layout="wide")
 st.title("自動発注・連絡書システム")
@@ -106,34 +108,26 @@ def convert_excel_to_pdf(excel_file_path, pdf_file_path):
                 try: os.remove(temp_pdf_excel)
                 except: pass
 
-# --- Excel出力ロジック ---
-def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", total_pages="1", filename="拾い出し表.xlsx"):
+# --- スタイルの複製用ヘルパー関数 ---
+def copy_cell_style(src_cell, dest_cell):
+    if src_cell.has_style:
+        dest_cell.font = copy(src_cell.font)
+        dest_cell.border = copy(src_cell.border)
+        dest_cell.fill = copy(src_cell.fill)
+        dest_cell.number_format = copy(src_cell.number_format)
+        dest_cell.protection = copy(src_cell.protection)
+        dest_cell.alignment = copy(src_cell.alignment)
+
+# --- Excel出力ロジック（自動拡張・ページ数自動カウント版） ---
+def generate_order_excel(order_df, selected_contractor, project_title="", staff_name="", order_date="", filename="拾い出し表.xlsx"):
     wb = openpyxl.load_workbook(filename)
-    ws_base = wb["連絡書"] # 元の1ページ目のテンプレート
     
-    # 2ページ以上の場合は、ここでシートを拡張する処理を入れる
-    # 新しいシートを作成してそこに枠をコピペしていく手法をとります
-    ws_new = wb.create_sheet("印刷用")
-    
-    for p in range(int(total_pages)):
-        start_row = 1 + (p * 20)
-        # 1行目〜20行目をコピー
-        for row in range(1, 21):
-            for col in range(1, 9):
-                src_cell = ws_base.cell(row=row, column=col)
-                dest_cell = ws_new.cell(row=start_row + row - 1, column=col)
-                dest_cell.value = src_cell.value
-                dest_cell.font = copy_font(src_cell.font) # スタイルもコピー
-                dest_cell.alignment = copy_alignment(src_cell.alignment)
+    # 1. 発注書シートのデータ更新
+    if "発注書" in wb.sheetnames:
+        ws = wb["発注書"]
+    else:
+        ws = wb.create_sheet("発注書")
         
-        # ページ番号の自動入力 (例: F1, F21...)
-        ws_new.cell(row=start_row, column=6).value = f"{p+1} / {total_pages}"
-        
-        # データを流し込む処理をここに追加
-        # (p * 14)行目以降のデータを p番目のブロックに書き込む...
-    
-    # 印刷設定をして保存
-    wb.save("出力用.xlsx")
     def safe_set(sheet_obj, row, col, value):
         cell = sheet_obj.cell(row=row, column=col)
         if not isinstance(cell, openpyxl.cell.cell.MergedCell):
@@ -143,7 +137,7 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         if pd.isna(val) or val == "NaN": return ""
         return val
 
-    for r in range(2, 100):  # ページ増加を見越してクリア範囲を少し拡張
+    for r in range(2, 500): 
         for c in range(1, 17):
             safe_set(ws, r, c, None)
                 
@@ -172,63 +166,108 @@ def generate_order_excel(order_df, selected_contractor, project_title="", staff_
         safe_set(ws, idx, 15, clean_val(getattr(row, "納品場所", None)))
         safe_set(ws, idx, 16, clean_val(getattr(row, "納品備考", None)))
         
+    # 2. 連絡書シートの自動拡張処理
     target_sheet_name = None
     for sheet_name in wb.sheetnames:
         if "連絡書" in sheet_name.strip():
             target_sheet_name = sheet_name
             break
-            
     if target_sheet_name is None and len(wb.sheetnames) > 0:
         target_sheet_name = wb.sheetnames[0]
             
     if target_sheet_name in wb.sheetnames:
         ws_renraku = wb[target_sheet_name]
         
-        # 🎯 日付の反映
-        if order_date.strip():
-            ws_renraku.cell(row=1, column=4).value = order_date.strip()
-            
-        # 🎯 ページ番号の合体と反映（例： "1 / 2" の形にしてF1セルに上書き）
-        ws_renraku.cell(row=1, column=6).value = f"{page_num.strip()} / {total_pages.strip()}"
-        # 既存テンプレートの「/」や「1」が残らないように隣のセルを掃除
-        ws_renraku.cell(row=1, column=7).value = None
-        ws_renraku.cell(row=1, column=8).value = None
-            
-        # 宛先担当者
-        if staff_name.strip():
-            ws_renraku.cell(row=2, column=3).value = staff_name.strip()
-            
-        # 🎯 件名の反映（長すぎる場合は自動縮小して全体を表示させる）
-        if project_title.strip():
-            title_cell = ws_renraku.cell(row=3, column=2)
-            title_cell.value = project_title.strip()
-            title_cell.alignment = Alignment(shrinkToFit=True, vertical='center')
-            # 既存の「新築工事」などの文字が被らないように掃除
-            ws_renraku.cell(row=3, column=3).value = None
-            ws_renraku.cell(row=3, column=4).value = None
-            ws_renraku.cell(row=3, column=5).value = None
-        
-        # 🎯 全ページ数から最大処理行を逆算し、チェックボックスを正確に消去する
-        try:
-            p_count = int(total_pages)
-        except:
-            p_count = 1
-            
+        # 必要ページ数の自動計算（1ページあたり14品目）
         num_items = len(order_df)
-        for p in range(p_count):
-            for i in range(14):
-                # 1ページ目は5行目〜、2ページ目は25行目〜 に対応
-                row_idx = 5 + i + (p * 20)
-                if (p * 14 + i) >= num_items:
-                    ws_renraku.cell(row=row_idx, column=1).value = None
+        total_pages = max(1, math.ceil(num_items / 14))
         
-        # 🎯 ページ数に合わせて印刷範囲を「動的」に変更（1ページなら20行、2ページなら40行）
-        max_print_row = 20 * p_count
+        # 既存の結合セル情報を一時保持（複製時のズレを防ぐ）
+        existing_merged_ranges = list(ws_renraku.merged_cells.ranges)
+        
+        # 2ページ目以降が必要な場合、1〜20行目のレイアウトを動的にコピペして拡張
+        for p in range(1, total_pages):
+            row_offset = p * 20
+            
+            # 行の高さとセルのスタイル・値を複製
+            for src_row in range(1, 21):
+                dest_row = src_row + row_offset
+                ws_renraku.row_dimensions[dest_row].height = ws_renraku.row_dimensions[src_row].height
+                
+                for col in range(1, 9):  # A列〜H列
+                    src_cell = ws_renraku.cell(row=src_row, column=col)
+                    dest_cell = ws_renraku.cell(row=dest_row, column=col)
+                    
+                    dest_cell.value = src_cell.value
+                    copy_cell_style(src_cell, dest_cell)
+            
+            # 結合セルの複製適用
+            for merged_range in existing_merged_ranges:
+                if merged_range.bounds[1] <= 20:  # 1〜20行目の結合範囲が対象
+                    min_col, min_row, max_col, max_row = merged_range.bounds
+                    ws_renraku.merge_cells(
+                        start_row=min_row + row_offset, start_column=min_col,
+                        end_row=max_row + row_offset, end_column=max_col
+                    )
+        
+        # 各ページへのデータ流し込みとヘッダー・フッター情報の書き込み
+        for p in range(total_pages):
+            row_offset = p * 20
+            
+            # 🎯 日付の反映
+            if order_date.strip():
+                ws_renraku.cell(row=1 + row_offset, column=4).value = order_date.strip()
+                
+            # 🎯 ページ番号の自動入力 (F列のセルに "1 / 2" のように書き込む)
+            ws_renraku.cell(row=1 + row_offset, column=6).value = f"{p + 1} / {total_pages}"
+            ws_renraku.cell(row=1 + row_offset, column=7).value = None
+            ws_renraku.cell(row=1 + row_offset, column=8).value = None
+                
+            # 宛先担当者
+            if staff_name.strip():
+                ws_renraku.cell(row=2 + row_offset, column=3).value = staff_name.strip()
+                
+            # 🎯 件名の反映（長すぎる場合は自動縮小）
+            if project_title.strip():
+                title_cell = ws_renraku.cell(row=3 + row_offset, column=2)
+                title_cell.value = project_title.strip()
+                title_cell.alignment = Alignment(shrinkToFit=True, vertical='center', horizontal='left')
+                ws_renraku.cell(row=3 + row_offset, column=3).value = None
+                ws_renraku.cell(row=3 + row_offset, column=4).value = None
+                ws_renraku.cell(row=3 + row_offset, column=5).value = None
+
+            # 品目データの書き込み（各ページ最大14行）
+            for i in range(14):
+                item_idx = p * 14 + i
+                target_row = 5 + i + row_offset
+                
+                if item_idx < num_items:
+                    # データがある場合、関数を上書きして明示的に値を流し込む
+                    item = order_df.iloc[item_idx]
+                    
+                    ws_renraku.cell(row=target_row, column=1).value = "□"
+                    ws_renraku.cell(row=target_row, column=2).value = clean_val(item.get("名称", ""))
+                    ws_renraku.cell(row=target_row, column=3).value = clean_val(item.get("規格", ""))
+                    ws_renraku.cell(row=target_row, column=4).value = clean_val(item.get("規格_1", ""))
+                    ws_renraku.cell(row=target_row, column=5).value = clean_val(item.get("規格_2", ""))
+                    ws_renraku.cell(row=target_row, column=6).value = clean_val(item.get("発注", ""))
+                    ws_renraku.cell(row=target_row, column=7).value = clean_val(item.get("単位", ""))
+                else:
+                    # 余った行の枠線の内側を綺麗に掃除（チェックボックス等の消去）
+                    ws_renraku.cell(row=target_row, column=1).value = None
+                    ws_renraku.cell(row=target_row, column=2).value = None
+                    ws_renraku.cell(row=target_row, column=3).value = None
+                    ws_renraku.cell(row=target_row, column=4).value = None
+                    ws_renraku.cell(row=target_row, column=5).value = None
+                    ws_renraku.cell(row=target_row, column=6).value = None
+                    ws_renraku.cell(row=target_row, column=7).value = None
+        
+        # 🎯 印刷範囲の動的変更
+        max_print_row = 20 * total_pages
         ws_renraku.print_area = f'A1:H{max_print_row}'
         ws_renraku.sheet_properties.pageSetUpPr.fitToPage = True
         ws_renraku.page_setup.fitToWidth = 1
-        # 高さはページ数分だけ許容する
-        ws_renraku.page_setup.fitToHeight = p_count
+        ws_renraku.page_setup.fitToHeight = total_pages
                 
     output_filename = f"連絡書_{selected_contractor}.xlsx"
     wb.save(output_filename)
@@ -327,8 +366,8 @@ if not st.session_state.raw_df.empty:
 
     st.subheader("2. 発注先および宛先情報を指定してください")
     
-    # 🎯 レイアウトを5分割してページ数のUIを追加
-    col_top1, col_top2, col_top3, col_top4, col_top5 = st.columns([3, 2, 2, 1, 1])
+    # UIの整理：手動のページ数入力用のコンポーネントを完全に排除
+    col_top1, col_top2, col_top3 = st.columns([4, 3, 3])
     with col_top1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
         selected_contractor = st.selectbox("発注先業者", ["--選択してください--"] + contractors)
@@ -337,10 +376,6 @@ if not st.session_state.raw_df.empty:
     with col_top3:
         today_str_ui = datetime.now().strftime("%Y/%m/%d")
         order_date = st.text_input("日付", value=today_str_ui)
-    with col_top4:
-        page_num = st.text_input("現在のページ", value="1")
-    with col_top5:
-        total_pages = st.text_input("全ページ", value="1")
         
     project_title = st.text_input("件名（現場名など）", value="白石送電事務所 新築工事")
 
@@ -363,9 +398,7 @@ if not st.session_state.raw_df.empty:
                         selected_contractor, 
                         project_title=project_title, 
                         staff_name=staff_name,
-                        order_date=order_date,
-                        page_num=page_num,
-                        total_pages=total_pages
+                        order_date=order_date
                     )
                     st.session_state["generated_excel"] = output_file
                     st.toast("Excelを発行しました！", icon="🎉")
@@ -384,7 +417,6 @@ if not st.session_state.raw_df.empty:
                 
                 with col2:
                     st.markdown("### PDFへ変換")
-                    mat_code = str(order_df.iloc[0]['材料コード'])
                     vendor_name = selected_contractor
                     now_str = datetime.now().strftime("%Y%m%d_%H%M")
                     default_pdf_name = f"連絡書_{vendor_name}_{now_str}.pdf"
