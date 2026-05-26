@@ -9,6 +9,7 @@ import math
 from datetime import datetime
 from copy import copy
 
+# ページ設定
 st.set_page_config(page_title="自動発注システム", layout="wide")
 st.title("自動発注・連絡書システム")
 
@@ -23,7 +24,13 @@ def check_password():
         st.info("システムを利用するにはパスワードを入力してください。")
         pwd = st.text_input("パスワード", type="password")
         if pwd:
-            if pwd == st.secrets["app_password"]:
+            # st.secrets["app_password"] を利用（設定されていない場合は暫定パスワード）
+            try:
+                correct_password = st.secrets["app_password"]
+            except:
+                correct_password = "admin"  # secrets未設定時のフォールバック
+                
+            if pwd == correct_password:
                 st.session_state["password_correct"] = True
                 st.rerun()
             else:
@@ -35,7 +42,7 @@ if not check_password():
     st.stop()
 
 # =========================================================
-# マスターファイルの更新
+# マスターファイルの更新（サイドバー）
 # =========================================================
 st.sidebar.subheader("マスターファイルの更新")
 uploaded_file = st.sidebar.file_uploader(
@@ -304,7 +311,8 @@ if uploaded_file is not None:
             st.sidebar.error(f"ファイルの読み込みに失敗しました: {e}")
 
 if "raw_df" not in st.session_state:
-    try: st.session_state.raw_df = load_data("拾い出し表.xlsx")
+    try: 
+        st.session_state.raw_df = load_data("拾い出し表.xlsx")
     except:
         st.warning("現在、データが読み込まれていません。サイドバーからファイルをアップロードしてください。")
         st.session_state.raw_df = pd.DataFrame()
@@ -339,7 +347,7 @@ if not st.session_state.raw_df.empty:
     display_columns = ['発注対象', '材料コード', '名称', '規格', '発注', '単位', '発注先']
     current_editor_key = f"material_editor_{search_query}"
 
-    # 🎯 行選択イベントを有効化 (on_select="rerun")
+    # 行選択イベントを有効化 (on_select="rerun")
     st.data_editor(
         st.session_state.display_df,
         column_order=display_columns,
@@ -354,7 +362,7 @@ if not st.session_state.raw_df.empty:
     )
     
     # =========================================================
-    # 🎯 選択された材料に応じた「広告シート」の自動プレビュー表示
+    # 選択された材料に応じた「広告シート」の自動プレビュー表示
     # =========================================================
     editor_state = st.session_state.get(current_editor_key, {})
     selection = editor_state.get("selection", {})
@@ -399,7 +407,6 @@ if not st.session_state.raw_df.empty:
 
     st.subheader("2. 発注先および宛先情報を指定してください")
     
-    # ページ数のUIは廃止され、業者・担当・日付・件名のみに整理されました
     col_top1, col_top2, col_top3 = st.columns([4, 3, 3])
     with col_top1:
         contractors = st.session_state.raw_df['発注先'].dropna().unique().tolist()
@@ -439,7 +446,8 @@ if not st.session_state.raw_df.empty:
             if "generated_excel" in st.session_state and st.session_state["generated_excel"]:
                 excel_file_path = st.session_state["generated_excel"]
                 with col1:
-                    with open(excel_file_path, "rb") as f: excel_data = f.read()
+                    with open(excel_file_path, "rb") as f: 
+                        excel_data = f.read()
                     st.download_button(
                         label=f"📥 Excelをダウンロード",
                         data=excel_data,
@@ -468,7 +476,8 @@ if not st.session_state.raw_df.empty:
                     
                     if "generated_pdf" in st.session_state and st.session_state["generated_pdf"] == pdf_file_path:
                         if os.path.exists(pdf_file_path):
-                            with open(pdf_file_path, "rb") as f: pdf_data = f.read()
+                            with open(pdf_file_path, "rb") as f: 
+                                pdf_data = f.read()
                             st.download_button(
                                 label=f"📥 PDFをダウンロード",
                                 data=pdf_data,
