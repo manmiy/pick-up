@@ -15,6 +15,7 @@ import pandas as pd
 import openpyxl
 import openpyxl.cell.cell
 import os
+import shutil
 import io
 import platform
 import subprocess
@@ -149,14 +150,20 @@ html, body, [class*="st-"] {
 /* ---------- タブ ---------- */
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px;
-    background: linear-gradient(135deg, #f0f2f6 0%, #e8eaf0 100%);
+    background: linear-gradient(135deg, #23243a 0%, #1e2235 100%);
     padding: 5px; border-radius: 14px;
 }
 .stTabs [data-baseweb="tab"] {
     border-radius: 10px; padding: 9px 18px; font-weight: 500; font-size:.88rem;
+    color: #b0b8d1 !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    color: #e0e4f0 !important;
 }
 .stTabs [data-baseweb="tab"][aria-selected="true"] {
-    background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.1);
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    color: #fff !important;
+    box-shadow: 0 2px 12px rgba(102,126,234,.4);
 }
 
 /* ---------- ボタン ---------- */
@@ -291,7 +298,8 @@ def load_data(file_bytes):
     return df
 
 
-def generate_order_excel(order_df, contractor, person_name, order_date, file_bytes):
+def generate_order_excel(order_df, contractor, person_name, order_date, file_bytes,
+                         subject_1="", subject_2=""):
     """発注書・連絡書の2シートだけを持つExcelバイナリを生成して返す。"""
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes))
 
@@ -335,13 +343,19 @@ def generate_order_excel(order_df, contractor, person_name, order_date, file_byt
         safe_set(idx, 15, _clean(getattr(row, "納品場所", None)))
         safe_set(idx, 16, _clean(getattr(row, "納品備考", None)))
 
-    # 連絡書の□調整
+    # 連絡書の□調整 & 件名書き込み
     if "連絡書" in wb.sheetnames:
         ws_r = wb["連絡書"]
         for i in range(14):
             if i >= len(order_df):
                 ws_r.cell(row=5 + i, column=1).value = None
         ws_r.print_area = "A1:H20"
+
+        # 件名を書き込み（B3, C3）
+        if subject_1:
+            ws_r.cell(row=3, column=2).value = subject_1
+        if subject_2:
+            ws_r.cell(row=3, column=3).value = subject_2
 
     # 不要シート削除
     for s in list(wb.sheetnames):
@@ -358,6 +372,18 @@ def generate_order_excel(order_df, contractor, person_name, order_date, file_byt
     wb.close()
     buf.seek(0)
     return buf.getvalue()
+
+
+def _find_libreoffice():
+    """LibreOffice のバイナリパスを探す。"""
+    candidates = ["libreoffice", "soffice",
+                  "/usr/bin/libreoffice", "/usr/bin/soffice",
+                  "/usr/lib/libreoffice/program/soffice",
+                  "/snap/bin/libreoffice"]
+    for cmd in candidates:
+        if shutil.which(cmd):
+            return shutil.which(cmd)
+    return None
 
 
 def convert_excel_to_pdf(excel_bytes, sheet_filter="連絡書"):
@@ -399,10 +425,18 @@ def convert_excel_to_pdf(excel_bytes, sheet_filter="連絡書"):
                 if excel_app:
                     excel_app.Quit()
         else:
+            lo_bin = _find_libreoffice()
+            if lo_bin is None:
+                raise Exception(
+                    "LibreOffice が見つかりません。"
+                    "Streamlit Cloud の場合は packages.txt に 'libreoffice' を記載してください。"
+                    "ローカル環境の場合は LibreOffice をインストールしてください。"
+                )
             subprocess.run(
-                ["libreoffice", "--headless", "--convert-to", "pdf",
+                [lo_bin, "--headless", "--convert-to", "pdf",
                  tmp_path, "--outdir", os.path.dirname(tmp_path)],
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=120,
             )
             lo_pdf = tmp_path.replace(".xlsx", ".pdf")
             if lo_pdf != pdf_path and os.path.exists(lo_pdf):
@@ -484,6 +518,8 @@ _defaults = dict(
     generated_excel_name="",
     person_name="",
     order_date=date.today(),
+    subject_1="白石送電事務所",
+    subject_2="新築工事",
 )
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -560,13 +596,6 @@ with tab1:
     st.markdown(
         '<div class="step-header"><h2>📤 拾い出し表のアップロード</h2>'
         "<p>拾い出し表のExcelファイル（.xlsx）をアップロードしてください</p></div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="upload-zone">'
-        '<div class="icon">📁</div>'
-        '<div class="text">下のボタンから拾い出し表（.xlsx）を選択してください</div>'
-        "</div>",
         unsafe_allow_html=True,
     )
 
@@ -781,6 +810,18 @@ with tab4:
                 od = st.date_input("📅 発注日", value=st.session_state.order_date, key="dt_inp")
                 st.session_state.order_date = od
 
+            # 連絡書の件名
+            st.markdown("#### 📌 連絡書の件名")
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                subj1 = st.text_input("件名１", value=st.session_state.subject_1,
+                                      placeholder="例: 白石送電事務所", key="subj1_inp")
+                st.session_state.subject_1 = subj1
+            with sc2:
+                subj2 = st.text_input("件名２", value=st.session_state.subject_2,
+                                      placeholder="例: 新築工事", key="subj2_inp")
+                st.session_state.subject_2 = subj2
+
             st.markdown('<div class="gradient-divider"></div>', unsafe_allow_html=True)
 
             if sel != "--選択してください--":
@@ -853,7 +894,11 @@ with tab5:
 
             if st.button("📄 Excelを発行する", type="primary", use_container_width=True, key="gen_xl"):
                 try:
-                    xl = generate_order_excel(checked, ctr, pn, od, st.session_state.file_bytes)
+                    xl = generate_order_excel(
+                        checked, ctr, pn, od, st.session_state.file_bytes,
+                        subject_1=st.session_state.subject_1,
+                        subject_2=st.session_state.subject_2,
+                    )
                     st.session_state.generated_excel_bytes = xl
                     st.session_state.generated_excel_name = out_name
                     st.toast("✅ Excelを発行しました！", icon="🎉")
