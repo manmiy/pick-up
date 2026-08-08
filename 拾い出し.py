@@ -46,6 +46,13 @@ html, body, [class*="st-"] {
     font-family: 'Noto Sans JP', sans-serif !important;
 }
 
+/* Material Symbols アイコンフォントを保護 */
+.material-symbols-rounded,
+.material-symbols-outlined,
+[class*="material-symbols"] {
+    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
+}
+
 /* ---------- メインヘッダー ---------- */
 .main-header {
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
@@ -374,18 +381,6 @@ def generate_order_excel(order_df, contractor, person_name, order_date, file_byt
     return buf.getvalue()
 
 
-def _find_libreoffice():
-    """LibreOffice のバイナリパスを探す。"""
-    candidates = ["libreoffice", "soffice",
-                  "/usr/bin/libreoffice", "/usr/bin/soffice",
-                  "/usr/lib/libreoffice/program/soffice",
-                  "/snap/bin/libreoffice"]
-    for cmd in candidates:
-        if shutil.which(cmd):
-            return shutil.which(cmd)
-    return None
-
-
 def convert_excel_to_pdf(excel_bytes, sheet_filter="連絡書"):
     """ExcelバイナリをPDFバイナリに変換して返す。"""
     import tempfile
@@ -425,19 +420,46 @@ def convert_excel_to_pdf(excel_bytes, sheet_filter="連絡書"):
                 if excel_app:
                     excel_app.Quit()
         else:
-            lo_bin = _find_libreoffice()
-            if lo_bin is None:
+            # 複数のコマンド名を順に試す（Streamlit Cloud で shutil.which が失敗する場合の対策）
+            lo_cmds = ["soffice", "libreoffice",
+                       "/usr/bin/soffice", "/usr/bin/libreoffice",
+                       "/usr/lib/libreoffice/program/soffice",
+                       "/snap/bin/libreoffice"]
+            # shutil.which で見つかればそれを優先
+            for cmd in lo_cmds:
+                found = shutil.which(cmd)
+                if found:
+                    lo_cmds = [found]
+                    break
+
+            lo_ok = False
+            lo_last_err = ""
+            for lo_cmd in lo_cmds:
+                try:
+                    subprocess.run(
+                        [lo_cmd, "--headless", "--convert-to", "pdf",
+                         tmp_path, "--outdir", os.path.dirname(tmp_path)],
+                        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=120,
+                    )
+                    lo_ok = True
+                    break
+                except FileNotFoundError:
+                    lo_last_err = f"{lo_cmd} が見つかりません"
+                    continue
+                except subprocess.CalledProcessError as e:
+                    lo_last_err = f"LibreOffice 実行エラー: {e}"
+                    break
+                except subprocess.TimeoutExpired:
+                    lo_last_err = "LibreOffice がタイムアウトしました"
+                    break
+
+            if not lo_ok:
                 raise Exception(
-                    "LibreOffice が見つかりません。"
+                    f"{lo_last_err}。"
                     "Streamlit Cloud の場合は packages.txt に 'libreoffice' を記載してください。"
-                    "ローカル環境の場合は LibreOffice をインストールしてください。"
                 )
-            subprocess.run(
-                [lo_bin, "--headless", "--convert-to", "pdf",
-                 tmp_path, "--outdir", os.path.dirname(tmp_path)],
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                timeout=120,
-            )
+
             lo_pdf = tmp_path.replace(".xlsx", ".pdf")
             if lo_pdf != pdf_path and os.path.exists(lo_pdf):
                 os.rename(lo_pdf, pdf_path)
